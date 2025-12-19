@@ -13,6 +13,16 @@ import {
   MenuItem,
   Stack,
 } from '@mui/material';
+import TemplateManager from './TemplateManager';
+
+interface Template {
+  _id: string;
+  name: string;
+  amount: number;
+  category: string;
+  description?: string;
+  type: 'income' | 'expense';
+}
 
 export default function TransactionForm() {
   const router = useRouter();
@@ -24,6 +34,16 @@ export default function TransactionForm() {
     date: new Date().toISOString().split('T')[0],
   });
   const [loading, setLoading] = useState(false);
+
+  const handleUseTemplate = (template: Template) => {
+    setFormData({
+      amount: template.amount.toString(),
+      category: template.category,
+      description: template.description || '',
+      type: template.type,
+      date: new Date().toISOString().split('T')[0],
+    });
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -63,9 +83,11 @@ export default function TransactionForm() {
   const categories = ['餐飲', '交通', '購物', '娛樂', '醫療', '教育', '房租', '水電', '通訊', '其他'];
 
   return (
-    <Card variant="outlined">
-      <CardHeader title="新增記帳" subheader="快速記錄您的收支" />
-      <CardContent>
+    <>
+      <TemplateManager onUseTemplate={handleUseTemplate} />
+      <Card variant="outlined" sx={{ mt: 2 }}>
+        <CardHeader title="新增記帳" subheader="快速記錄您的收支" />
+        <CardContent>
         <Stack component="form" spacing={2} onSubmit={handleSubmit}>
           <ToggleButtonGroup
             value={formData.type}
@@ -136,6 +158,7 @@ export default function TransactionForm() {
         </Stack>
       </CardContent>
     </Card>
+    </>
   );
 }
 

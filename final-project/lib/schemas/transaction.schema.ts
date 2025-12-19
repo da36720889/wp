@@ -16,6 +16,9 @@ export const queryTransactionSchema = z.object({
   endDate: z.coerce.date().optional(),
   type: z.enum(['income', 'expense']).optional(),
   category: z.string().optional(),
+  search: z.string().optional(),
+  minAmount: z.coerce.number().optional(),
+  maxAmount: z.coerce.number().optional(),
   limit: z.coerce.number().int().positive().max(100).optional().default(10),
   offset: z.coerce.number().int().nonnegative().optional().default(0),
 });

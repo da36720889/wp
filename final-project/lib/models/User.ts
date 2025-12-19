@@ -6,6 +6,9 @@ export interface IUser extends Document {
   email: string;
   name?: string;
   picture?: string;
+  gmailAccessToken?: string; // Gmail API access token
+  gmailRefreshToken?: string; // Gmail API refresh token
+  gmailEnabled?: boolean; // 是否啟用 Gmail 自動匯入
   createdAt: Date;
   updatedAt: Date;
 }
@@ -33,6 +36,18 @@ const UserSchema: Schema = new Schema(
     },
     picture: {
       type: String,
+    },
+    gmailAccessToken: {
+      type: String,
+      select: false, // 預設不返回，保護敏感資訊
+    },
+    gmailRefreshToken: {
+      type: String,
+      select: false,
+    },
+    gmailEnabled: {
+      type: Boolean,
+      default: false,
     },
   },
   {

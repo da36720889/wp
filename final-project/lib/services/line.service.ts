@@ -3,6 +3,7 @@ import { TransactionService } from './transaction.service';
 import { LLMService } from './llm.service';
 import { UserService } from './user.service';
 import { GroupExpenseService } from './groupExpense.service';
+import { PetService } from './pet.service';
 import { createTransactionSchema } from '@/lib/schemas/transaction.schema';
 import { logger } from '@/lib/utils/logger';
 import { AppError } from '@/lib/utils/errors';
@@ -43,12 +44,14 @@ export class LineService {
   private llmService: LLMService;
   private userService: UserService;
   private groupExpenseService: GroupExpenseService;
+  private petService: PetService;
 
   constructor() {
     this.transactionService = new TransactionService();
     this.llmService = new LLMService();
     this.userService = new UserService();
     this.groupExpenseService = new GroupExpenseService();
+    this.petService = new PetService();
   }
 
   private async getOrCreateUser(lineUserId: string): Promise<string> {
@@ -123,10 +126,26 @@ export class LineService {
       const validated = createTransactionSchema.parse(parsed);
       const transaction = await this.transactionService.createTransaction(unifiedUserId, validated);
 
+      // 餵食電子雞
+      let petMessage = '';
+      try {
+        const pet = await this.petService.feedPet(unifiedUserId, validated.amount);
+        const petEmoji = pet.state === 'eating' ? '🍽️' : pet.state === 'happy' ? '😊' : '🐣';
+        petMessage = `\n\n${petEmoji} ${pet.name} 吃飽了！${pet.state === 'eating' ? '正在享用美食中...' : ''}`;
+        
+        // 檢查進化（根據階段變化判斷）
+        const currentPet = await this.petService.getOrCreatePet(unifiedUserId);
+        if (currentPet.stage !== pet.stage && currentPet.stage !== 'sick' && currentPet.stage !== 'dying' && currentPet.stage !== 'dead') {
+          petMessage += '\n✨ 恭喜！你的電子雞進化了！';
+        }
+      } catch (error) {
+        logger.error('Error feeding pet', error as Error);
+      }
+
       const typeText = validated.type === 'income' ? '收入' : '支出';
       const response = `✅ 已記錄 ${typeText}：\n金額：${validated.amount} 元\n類別：${validated.category}${
         validated.description ? `\n說明：${validated.description}` : ''
-      }`;
+      }${petMessage}`;
 
       await this.replyMessage(event.replyToken, response);
       logger.info('Transaction created', { lineUserId: userId, unifiedUserId, transactionId: transaction._id });
@@ -296,6 +315,31 @@ export class LineService {
             } else {
               await this.replyMessage(replyToken, '❌ 找不到該筆記錄或無權限刪除。');
             }
+          }
+          break;
+        }
+
+        case 'pet':
+        case '寵物':
+        case '電子雞': {
+          const unifiedUserId = await this.getOrCreateUser(lineUserId);
+          try {
+            const pet = await this.petService.getOrCreatePet(unifiedUserId);
+            const petEmoji = pet.stage === 'dead' ? '💀' : pet.stage === 'dying' ? '😵' : pet.stage === 'sick' ? '🤒' : pet.state === 'eating' ? '🍽️' : pet.state === 'hungry' ? '😰' : pet.state === 'happy' ? '😊' : '🐣';
+            const stageText = pet.stage === 'egg' ? '蛋' : pet.stage === 'baby' ? '嬰兒期' : pet.stage === 'child' ? '兒童期' : pet.stage === 'adult' ? '成年期' : pet.stage === 'sick' ? '生病' : pet.stage === 'dying' ? '垂死' : '死亡';
+            const petInfo = `${petEmoji} **${pet.name}**\n\n` +
+              `階段：${stageText}\n` +
+              `等級：Lv.${pet.level}\n` +
+              `飽食度：${pet.hunger}%\n` +
+              `心情值：${pet.happiness}%\n` +
+              `健康度：${pet.health}%\n` +
+              `連續記帳：${pet.consecutiveDays} 天\n` +
+              `總記帳筆數：${pet.totalTransactions} 筆\n\n` +
+              `狀態：${this.petService.getPetStatusMessage(pet)}`;
+            await this.replyMessage(replyToken, petInfo);
+          } catch (error) {
+            logger.error('Error fetching pet info', error as Error);
+            await this.replyMessage(replyToken, '❌ 查詢電子雞狀態時發生錯誤');
           }
           break;
         }
@@ -553,6 +597,7 @@ export class LineService {
             `/list [數量] - 查詢最近的記錄（預設 10 筆）\n` +
             `/summary - 查看記帳摘要\n` +
             `/delete [編號] - 刪除指定記錄（例如：/delete i1 或 /delete o1）\n` +
+            `/pet - 查看電子雞狀態\n` +
             `/myid - 獲取您的 LINE 用戶 ID（用於連結 Google 帳號）\n` +
             `/group - 群組分帳功能（僅在群組中使用）\n` +
             `/help - 顯示此說明\n\n` +

@@ -8,10 +8,17 @@ import TransactionForm from '@/components/TransactionForm';
 import SummaryCard from '@/components/SummaryCard';
 import LineLinkCard from '@/components/LineLinkCard';
 import TrendChart from '@/components/TrendChart';
+import BudgetCard from '@/components/BudgetCard';
+import CategoryChart from '@/components/CategoryChart';
+import SavingsGoalCard from '@/components/SavingsGoalCard';
+import PetDisplay from '@/components/PetDisplay';
+import { Button, Menu, MenuItem } from '@mui/material';
+import { Download as DownloadIcon } from '@mui/icons-material';
 
 export default function DashboardPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
+  const [exportMenuAnchor, setExportMenuAnchor] = useState<null | HTMLElement>(null);
 
   useEffect(() => {
     if (status === 'unauthenticated') {
@@ -41,6 +48,29 @@ export default function DashboardPage() {
               <h1 className="text-xl font-semibold text-gray-900">記帳助手</h1>
             </div>
             <div className="flex items-center gap-4">
+              <Button
+                variant="outlined"
+                size="small"
+                startIcon={<DownloadIcon />}
+                onClick={(e) => setExportMenuAnchor(e.currentTarget)}
+              >
+                匯出
+              </Button>
+              <Menu
+                anchorEl={exportMenuAnchor}
+                open={Boolean(exportMenuAnchor)}
+                onClose={() => setExportMenuAnchor(null)}
+              >
+                <MenuItem
+                  onClick={() => {
+                    window.location.href = '/api/export';
+                    setExportMenuAnchor(null);
+                  }}
+                >
+                  <DownloadIcon sx={{ mr: 1 }} fontSize="small" />
+                  CSV 格式
+                </MenuItem>
+              </Menu>
               <span className="hidden text-sm text-gray-600 sm:block">{session.user?.email}</span>
               <button
                 onClick={() => signOut({ callbackUrl: '/auth/signin' })}
@@ -65,6 +95,22 @@ export default function DashboardPage() {
           <TrendChart />
         </div>
 
+        {/* 預算和類別分析 */}
+        <div className="mb-6 grid gap-6 md:grid-cols-2">
+          <BudgetCard />
+          <CategoryChart />
+        </div>
+
+        {/* 儲蓄目標 */}
+        <div className="mb-6">
+          <SavingsGoalCard />
+        </div>
+
+        {/* 電子雞 */}
+        <div className="mb-6">
+          <PetDisplay />
+        </div>
+
         {/* 交易列表和側邊欄 */}
         <div className="grid gap-6 lg:grid-cols-3">
           <div className="lg:col-span-2">
@@ -72,7 +118,9 @@ export default function DashboardPage() {
           </div>
           <div className="lg:col-span-1 space-y-6">
             <LineLinkCard />
-            <TransactionForm />
+            <div>
+              <TransactionForm />
+            </div>
           </div>
         </div>
       </main>

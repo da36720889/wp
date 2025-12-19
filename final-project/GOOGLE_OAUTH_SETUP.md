@@ -88,6 +88,28 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 4. 在「已授權的重新導向 URI」中添加：`https://your-domain.vercel.app/api/auth/callback/google`
 5. 儲存變更
 
+## 步驟 7: 解決「access_denied」錯誤
+
+如果登入時出現「access_denied」錯誤，表示應用程式還在測試階段，且您的帳號不在測試使用者列表中。
+
+### 解決方法：
+
+1. 前往 [Google Cloud Console](https://console.cloud.google.com/)
+2. 選擇您的專案
+3. 前往「API 和服務」→「OAuth 同意畫面」
+4. 點擊「測試使用者」標籤
+5. 點擊「新增使用者」
+6. 輸入要測試的 Google 帳號電子郵件（例如：`da36720889@gmail.com`）
+7. 點擊「新增」
+8. 儲存變更
+9. 重新嘗試登入
+
+### 或者將應用程式設為公開：
+
+1. 在「OAuth 同意畫面」中，點擊「發佈應用程式」
+2. 確認要發佈應用程式
+3. 注意：發佈應用程式需要通過 Google 的驗證程序（可能需要幾天時間）
+
 ## 測試
 
 1. 啟動開發伺服器：`npm run dev`

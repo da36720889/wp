@@ -7,6 +7,9 @@ export default function TransactionList() {
   const [transactions, setTransactions] = useState<ITransaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [minAmount, setMinAmount] = useState('');
+  const [maxAmount, setMaxAmount] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editFormData, setEditFormData] = useState<{
     amount: string;
@@ -19,7 +22,17 @@ export default function TransactionList() {
   const fetchTransactions = async () => {
     try {
       setLoading(true);
-      const response = await fetch('/api/transactions?limit=20');
+      let url = '/api/transactions?limit=20';
+      if (searchQuery) {
+        url += `&search=${encodeURIComponent(searchQuery)}`;
+      }
+      if (minAmount) {
+        url += `&minAmount=${encodeURIComponent(minAmount)}`;
+      }
+      if (maxAmount) {
+        url += `&maxAmount=${encodeURIComponent(maxAmount)}`;
+      }
+      const response = await fetch(url);
       if (!response.ok) throw new Error('載入失敗');
       const data = await response.json();
       setTransactions(data.transactions || []);
@@ -33,6 +46,14 @@ export default function TransactionList() {
   useEffect(() => {
     fetchTransactions();
   }, []);
+
+  // 搜尋防抖
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      fetchTransactions();
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [searchQuery, minAmount, maxAmount]);
 
   const handleEdit = (transaction: ITransaction) => {
     setEditingId(transaction._id.toString());
@@ -141,6 +162,36 @@ export default function TransactionList() {
         >
           🔄
         </button>
+      </div>
+
+      {/* 搜尋框 */}
+      <div className="mb-4 space-y-2">
+        <div className="flex gap-2">
+          <input
+            type="text"
+            placeholder="搜尋描述或類別..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+        </div>
+        <div className="flex gap-2">
+          <input
+            type="number"
+            placeholder="最小金額"
+            value={minAmount}
+            onChange={(e) => setMinAmount(e.target.value)}
+            className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+          <span className="flex items-center text-gray-500">~</span>
+          <input
+            type="number"
+            placeholder="最大金額"
+            value={maxAmount}
+            onChange={(e) => setMaxAmount(e.target.value)}
+            className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+        </div>
       </div>
 
       {transactions.length === 0 ? (

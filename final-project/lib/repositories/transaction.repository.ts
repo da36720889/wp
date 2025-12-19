@@ -14,11 +14,11 @@ export class TransactionRepository {
     return await Transaction.findOne({ _id: transactionId, userId });
   }
 
-  async findByUserId(query: QueryTransactionInput): Promise<{
+  async findByUserId(query: QueryTransactionInput & { search?: string; minAmount?: number; maxAmount?: number }): Promise<{
     transactions: ITransaction[];
     total: number;
   }> {
-    const { userId, startDate, endDate, type, category, limit, offset } = query;
+    const { userId, startDate, endDate, type, category, limit, offset, search, minAmount, maxAmount } = query;
 
     const filter: Record<string, unknown> = { userId };
 
@@ -33,8 +33,24 @@ export class TransactionRepository {
       filter.type = type;
     }
 
-    if (category) {
+    // 搜尋功能：在描述和類別中搜尋
+    // 注意：如果同時有 category 和 search，search 會覆蓋 category 條件
+    if (search && search.trim()) {
+      filter.$or = [
+        { description: { $regex: search.trim(), $options: 'i' } },
+        { category: { $regex: search.trim(), $options: 'i' } },
+      ];
+    } else if (category) {
+      // 只有在沒有 search 時才使用 category 篩選
       filter.category = category;
+    }
+
+    // 金額範圍搜尋
+    if (minAmount !== undefined || maxAmount !== undefined) {
+      const amountFilter: { $gte?: number; $lte?: number } = {};
+      if (minAmount !== undefined) amountFilter.$gte = minAmount;
+      if (maxAmount !== undefined) amountFilter.$lte = maxAmount;
+      filter.amount = amountFilter;
     }
 
     const [transactions, total] = await Promise.all([

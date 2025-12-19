@@ -69,7 +69,20 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       }
       return true;
     },
-    async session({ session, user: sessionUser }) {
+    async jwt({ token, account, user }) {
+      // 首次登入時儲存 access token 和 refresh token
+      if (account && account.provider === 'google') {
+        await connectDB();
+        const dbUser = await User.findOne({ googleId: account.providerAccountId });
+        if (dbUser) {
+          dbUser.gmailAccessToken = account.access_token;
+          dbUser.gmailRefreshToken = account.refresh_token;
+          await dbUser.save();
+        }
+      }
+      return token;
+    },
+    async session({ session, user: sessionUser, token }) {
       if (session.user && session.user.email) {
         await connectDB();
         const user = await User.findOne({ email: session.user.email });
