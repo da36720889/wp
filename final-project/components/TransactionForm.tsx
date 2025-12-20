@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Card,
@@ -13,7 +13,6 @@ import {
   MenuItem,
   Stack,
 } from '@mui/material';
-import TemplateManager from './TemplateManager';
 
 interface Template {
   _id: string;
@@ -45,6 +44,25 @@ export default function TransactionForm() {
     });
   };
 
+  // 監聽來自 TemplateManager 的模板使用事件
+  useEffect(() => {
+    const handleTemplateEvent = (e: Event) => {
+      const customEvent = e as CustomEvent<Template>;
+      const template = customEvent.detail;
+      setFormData({
+        amount: template.amount.toString(),
+        category: template.category,
+        description: template.description || '',
+        type: template.type,
+        date: new Date().toISOString().split('T')[0],
+      });
+    };
+    window.addEventListener('useTemplate', handleTemplateEvent);
+    return () => {
+      window.removeEventListener('useTemplate', handleTemplateEvent);
+    };
+  }, []);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -61,6 +79,11 @@ export default function TransactionForm() {
 
       if (!response.ok) throw new Error('創建失敗');
 
+      const data = await response.json();
+      
+      // 觸發自定義事件，通知 PetDisplay 和其他組件刷新
+      window.dispatchEvent(new CustomEvent('transactionCreated', { detail: data }));
+      
       // 重置表單
       setFormData({
         amount: '',
@@ -72,7 +95,6 @@ export default function TransactionForm() {
 
       // 重新載入頁面以更新列表
       router.refresh();
-      window.location.reload();
     } catch (error) {
       alert(error instanceof Error ? error.message : '創建失敗');
     } finally {
@@ -83,10 +105,8 @@ export default function TransactionForm() {
   const categories = ['餐飲', '交通', '購物', '娛樂', '醫療', '教育', '房租', '水電', '通訊', '其他'];
 
   return (
-    <>
-      <TemplateManager onUseTemplate={handleUseTemplate} />
-      <Card variant="outlined" sx={{ mt: 2 }}>
-        <CardHeader title="新增記帳" subheader="快速記錄您的收支" />
+    <Card variant="outlined">
+      <CardHeader title="新增記帳" subheader="快速記錄您的收支" />
         <CardContent>
         <Stack component="form" spacing={2} onSubmit={handleSubmit}>
           <ToggleButtonGroup
@@ -158,7 +178,6 @@ export default function TransactionForm() {
         </Stack>
       </CardContent>
     </Card>
-    </>
   );
 }
 

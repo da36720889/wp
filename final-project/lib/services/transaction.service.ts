@@ -22,23 +22,22 @@ export class TransactionService {
   ): Promise<ITransaction> {
     const transaction = await this.repository.create({ ...data, userId });
     
-    // 如果是收入，更新所有儲蓄目標的進度（非同步，不阻塞）
-    if (data.type === 'income') {
-      Promise.resolve().then(async () => {
-        try {
-          const goals = await this.savingsGoalService.getGoals(userId, false);
-          await Promise.all(
-            goals.map(goal => 
-              this.savingsGoalService.updateGoalProgress(userId, goal._id.toString())
-            )
-          );
-        } catch (err) {
-          console.error('Error updating savings goal progress:', err);
-        }
-      }).catch(err => {
-        console.error('Error in savings goal update promise:', err);
-      });
-    }
+    // 無論是收入還是支出，都更新所有儲蓄目標的進度（非同步，不阻塞）
+    // 因為儲蓄 = 收入 - 支出，所以任何交易都會影響儲蓄金額
+    Promise.resolve().then(async () => {
+      try {
+        const goals = await this.savingsGoalService.getGoals(userId, false);
+        await Promise.all(
+          goals.map(goal => 
+            this.savingsGoalService.updateGoalProgress(userId, goal._id.toString())
+          )
+        );
+      } catch (err) {
+        console.error('Error updating savings goal progress:', err);
+      }
+    }).catch(err => {
+      console.error('Error in savings goal update promise:', err);
+    });
     
     return transaction;
   }
@@ -66,8 +65,9 @@ export class TransactionService {
     
     const updatedTransaction = await this.repository.update(transactionId, userId, data);
     
-    // 如果交易類型改變為收入，或金額改變，更新儲蓄目標
-    if (updatedTransaction && (data.type === 'income' || oldTransaction.type === 'income' || data.amount !== undefined)) {
+    // 無論是收入還是支出，只要交易被更新（金額或類型改變），都應該更新儲蓄目標
+    // 因為儲蓄 = 收入 - 支出
+    if (updatedTransaction) {
       this.savingsGoalService.getGoals(userId, false).then(goals => {
         goals.forEach(goal => {
           this.savingsGoalService.updateGoalProgress(userId, goal._id.toString()).catch(err => {
@@ -88,11 +88,11 @@ export class TransactionService {
       return false;
     }
     
-    const wasIncome = transaction.type === 'income';
     const deleted = await this.repository.delete(transactionId, userId);
     
-    // 如果刪除的是收入，更新儲蓄目標
-    if (deleted && wasIncome) {
+    // 刪除交易後，無論是收入還是支出，都應該更新儲蓄目標
+    // 因為儲蓄 = 收入 - 支出
+    if (deleted) {
       this.savingsGoalService.getGoals(userId, false).then(goals => {
         goals.forEach(goal => {
           this.savingsGoalService.updateGoalProgress(userId, goal._id.toString()).catch(err => {

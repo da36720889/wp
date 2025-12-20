@@ -46,7 +46,21 @@ export default function SavingsGoalCard() {
 
   useEffect(() => {
     fetchGoals();
-    // 只在交易創建時通過事件觸發刷新，不再自動輪詢
+    
+    // 監聽自定義事件，當記帳完成時刷新儲蓄目標
+    const handleTransactionCreated = () => {
+      console.log('💰 Transaction created, refreshing savings goals...');
+      // 延遲一下，確保後端已經更新了數據
+      setTimeout(() => {
+        fetchGoals();
+      }, 500);
+    };
+    
+    window.addEventListener('transactionCreated', handleTransactionCreated);
+    
+    return () => {
+      window.removeEventListener('transactionCreated', handleTransactionCreated);
+    };
   }, []);
 
   const fetchGoals = async () => {

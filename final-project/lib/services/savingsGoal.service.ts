@@ -32,7 +32,7 @@ export class SavingsGoalService {
       completed: false,
     });
 
-    // 計算當前金額（從所有收入累積）
+    // 計算當前金額（從淨儲蓄：收入 - 支出）
     await this.updateGoalProgress(userId, goal._id.toString());
 
     return goal;
@@ -66,7 +66,7 @@ export class SavingsGoalService {
   }
 
   /**
-   * 更新目標進度（從收入計算）
+   * 更新目標進度（從淨儲蓄計算：收入 - 支出）
    */
   async updateGoalProgress(userId: string, goalId: string): Promise<void> {
     await connectDB();
@@ -75,15 +75,25 @@ export class SavingsGoalService {
     if (!goal) return;
 
     // 獲取所有收入
-    const { transactions } = await this.transactionRepository.findByUserId({
+    const { transactions: incomeTransactions } = await this.transactionRepository.findByUserId({
       userId,
       type: 'income',
       limit: 10000,
       offset: 0,
     });
 
-    // 計算總收入作為當前金額
-    const currentAmount = transactions.reduce((sum, t) => sum + t.amount, 0);
+    // 獲取所有支出
+    const { transactions: expenseTransactions } = await this.transactionRepository.findByUserId({
+      userId,
+      type: 'expense',
+      limit: 10000,
+      offset: 0,
+    });
+
+    // 計算淨儲蓄：總收入 - 總支出
+    const totalIncome = incomeTransactions.reduce((sum, t) => sum + t.amount, 0);
+    const totalExpense = expenseTransactions.reduce((sum, t) => sum + t.amount, 0);
+    const currentAmount = Math.max(0, totalIncome - totalExpense); // 確保不為負數
 
     goal.currentAmount = currentAmount;
 

@@ -57,22 +57,11 @@ export default function TrendChart() {
   );
 
   const chartHeight = 300;
-  // 根據週期計算圖表寬度
-  // 週、月、年使用相同的固定寬度（基於月視圖的寬度：12個月 * 80 + 110 = 1070）
-  let chartWidth: number;
-  
-  if (period === 'day') {
-    // 日視圖：30天，使用動態計算
-    const minDataPointWidth = 35;
-    const calculatedWidth = data.labels.length * minDataPointWidth + 110;
-    chartWidth = Math.min(1200, Math.max(900, calculatedWidth));
-  } else {
-    // 週、月、年：使用相同的固定寬度，確保長度一致
-    // 月視圖：12個月 * 80 + 110 = 1070
-    // 週和年也使用相同的寬度
-    const fixedWidth = 12 * 80 + 110; // 1070，與月視圖一致
-    chartWidth = fixedWidth;
-  }
+  // 日、週、月、年：使用相同的固定寬度，確保長度一致
+  // 月視圖：12個月 * 80 + 110 = 1070
+  // 所有視圖都使用相同的固定寬度
+  const fixedWidth = 12 * 80 + 110; // 1070
+  const chartWidth = fixedWidth;
   const padding = { top: 20, right: 40, bottom: 50, left: 70 };
   const graphWidth = chartWidth - padding.left - padding.right;
   const graphHeight = chartHeight - padding.top - padding.bottom;

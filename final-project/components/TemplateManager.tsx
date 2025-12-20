@@ -17,7 +17,7 @@ import {
   MenuItem,
   Chip,
 } from '@mui/material';
-import { Add as AddIcon, Edit as EditIcon, Delete as DeleteIcon, ContentCopy as CopyIcon } from '@mui/icons-material';
+import { Add as AddIcon, Edit as EditIcon, Delete as DeleteIcon } from '@mui/icons-material';
 
 interface Template {
   _id: string;
@@ -180,9 +180,12 @@ export default function TemplateManager({ onUseTemplate }: { onUseTemplate: (tem
               {templates.map((template) => (
                 <div
                   key={template._id}
-                  className="flex items-center justify-between rounded-md border border-gray-200 p-2 hover:bg-gray-50"
+                  className="group flex items-center justify-between rounded-lg border border-gray-200 bg-white p-3 transition-all hover:border-gray-300 hover:shadow-sm"
                 >
-                  <div className="flex-1">
+                  <div 
+                    className="flex-1 cursor-pointer"
+                    onClick={() => handleUse(template)}
+                  >
                     <div className="flex items-center gap-2">
                       <Typography variant="body2" fontWeight="medium">
                         {template.name}
@@ -197,24 +200,42 @@ export default function TemplateManager({ onUseTemplate }: { onUseTemplate: (tem
                       {template.category} · {template.amount} 元
                     </Typography>
                   </div>
-                  <Stack direction="row" spacing={0.5}>
-                    <IconButton
+                  <Stack direction="row" spacing={0.5} alignItems="center">
+                    <Button
+                      variant="outlined"
                       size="small"
                       onClick={() => handleUse(template)}
-                      title="使用模板"
+                      sx={{ 
+                        minWidth: 'auto',
+                        px: 1.5,
+                        textTransform: 'none',
+                        fontSize: '0.75rem',
+                        borderColor: 'gray.300',
+                        color: 'text.primary',
+                        '&:hover': {
+                          borderColor: 'gray.400',
+                          backgroundColor: 'gray.50'
+                        }
+                      }}
                     >
-                      <CopyIcon fontSize="small" />
-                    </IconButton>
+                      使用
+                    </Button>
                     <IconButton
                       size="small"
-                      onClick={() => handleOpenDialog(template)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleOpenDialog(template);
+                      }}
                       title="編輯"
                     >
                       <EditIcon fontSize="small" />
                     </IconButton>
                     <IconButton
                       size="small"
-                      onClick={() => handleDelete(template._id)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDelete(template._id);
+                      }}
                       color="error"
                       title="刪除"
                     >

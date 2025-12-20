@@ -4,6 +4,7 @@ import { UserService } from '@/lib/services/user.service';
 import { TransactionRepository } from '@/lib/repositories/transaction.repository';
 import connectDB from '@/lib/db/mongodb';
 import { logger } from '@/lib/utils/logger';
+import Pet from '@/lib/models/Pet';
 
 const userService = new UserService();
 const transactionRepository = new TransactionRepository();
@@ -79,6 +80,46 @@ export async function POST(request: NextRequest) {
       mergeResult.newUserId
     );
 
+    // 遷移寵物記錄
+    let petMigrated = false;
+    const oldPet = await Pet.findOne({ userId: mergeResult.oldUserId });
+    const newPet = await Pet.findOne({ userId: mergeResult.newUserId });
+    
+    if (oldPet) {
+      if (newPet) {
+        // 如果兩個用戶都有寵物，保留等級更高的那個
+        // 如果等級相同，保留經驗值更高的
+        if (oldPet.level > newPet.level || 
+            (oldPet.level === newPet.level && oldPet.experience > newPet.experience)) {
+          // 舊寵物更好，更新新寵物為舊寵物的數據
+          newPet.name = oldPet.name;
+          newPet.stage = oldPet.stage;
+          newPet.state = oldPet.state;
+          newPet.hunger = oldPet.hunger;
+          newPet.happiness = oldPet.happiness;
+          newPet.health = oldPet.health;
+          newPet.experience = oldPet.experience;
+          newPet.level = oldPet.level;
+          newPet.lastFedAt = oldPet.lastFedAt;
+          newPet.consecutiveDays = oldPet.consecutiveDays;
+          newPet.totalTransactions = oldPet.totalTransactions;
+          newPet.evolutionType = oldPet.evolutionType;
+          await newPet.save();
+          await oldPet.deleteOne();
+          petMigrated = true;
+        } else {
+          // 新寵物更好，刪除舊寵物
+          await oldPet.deleteOne();
+          petMigrated = true;
+        }
+      } else {
+        // 只有舊用戶有寵物，遷移到新用戶
+        oldPet.userId = mergeResult.newUserId;
+        await oldPet.save();
+        petMigrated = true;
+      }
+    }
+
     // 刪除舊的 LINE 用戶記錄
     const oldUser = await userService.getUserById(mergeResult.oldUserId);
     if (oldUser) {
@@ -89,11 +130,13 @@ export async function POST(request: NextRequest) {
       googleUserId: session.user.id,
       lineUserId,
       migratedTransactions: migratedCount,
+      petMigrated,
     });
 
     return NextResponse.json({
       message: '成功關聯 LINE 用戶',
       migratedTransactions: migratedCount,
+      petMigrated,
     });
   } catch (error) {
     logger.error('Error linking LINE user', error as Error);

@@ -1,23 +1,25 @@
 'use client';
 
-import { useSession, signOut } from 'next-auth/react';
+import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { Box, AppBar, Toolbar, Typography, Button, Menu, MenuItem } from '@mui/material';
+import { Download as DownloadIcon } from '@mui/icons-material';
 import TransactionList from '@/components/TransactionList';
 import TransactionForm from '@/components/TransactionForm';
-import SummaryCard from '@/components/SummaryCard';
-import LineLinkCard from '@/components/LineLinkCard';
+import TemplateManager from '@/components/TemplateManager';
 import TrendChart from '@/components/TrendChart';
 import BudgetCard from '@/components/BudgetCard';
 import CategoryChart from '@/components/CategoryChart';
 import SavingsGoalCard from '@/components/SavingsGoalCard';
 import PetDisplay from '@/components/PetDisplay';
-import { Button, Menu, MenuItem } from '@mui/material';
-import { Download as DownloadIcon } from '@mui/icons-material';
+import Sidebar, { SidebarPage } from '@/components/Sidebar';
 
 export default function DashboardPage() {
   const { data: session, status } = useSession();
   const router = useRouter();
+  const [currentPage, setCurrentPage] = useState<SidebarPage>('home');
+  const [mobileOpen, setMobileOpen] = useState(false);
   const [exportMenuAnchor, setExportMenuAnchor] = useState<null | HTMLElement>(null);
 
   useEffect(() => {
@@ -25,6 +27,10 @@ export default function DashboardPage() {
       router.push('/auth/signin');
     }
   }, [status, router]);
+
+  const handleMobileToggle = () => {
+    setMobileOpen(!mobileOpen);
+  };
 
   if (status === 'loading') {
     return (
@@ -38,21 +44,101 @@ export default function DashboardPage() {
     return null;
   }
 
+  // 渲染當前頁面內容
+  const renderPageContent = () => {
+    switch (currentPage) {
+      case 'home':
+        return (
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+            {/* 電子雞 */}
+            <PetDisplay />
+            
+            {/* 記帳和模板（中間並排） */}
+            <Box sx={{ display: 'grid', gap: 3, gridTemplateColumns: { xs: '1fr', lg: '1fr 1fr' } }}>
+              <TransactionForm />
+              <TemplateManager onUseTemplate={(template) => {
+                // 觸發自定義事件，讓 TransactionForm 接收模板數據
+                window.dispatchEvent(new CustomEvent('useTemplate', { detail: template }));
+              }} />
+            </Box>
+            
+            {/* 記帳記錄（最下方） */}
+            <TransactionList />
+          </Box>
+        );
+      case 'analytics':
+        return (
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <TrendChart />
+            <CategoryChart />
+          </Box>
+        );
+      case 'budget':
+        return (
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <BudgetCard />
+          </Box>
+        );
+      case 'savings':
+        return (
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <SavingsGoalCard />
+          </Box>
+        );
+      default:
+        return null;
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* 導航欄 */}
-      <nav className="sticky top-0 z-50 border-b border-gray-200 bg-white">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="flex h-16 items-center justify-between">
-            <div className="flex items-center gap-3">
-              <h1 className="text-xl font-semibold text-gray-900">記帳助手</h1>
-            </div>
-            <div className="flex items-center gap-4">
+    <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: '#f9fafb' }}>
+      {/* 側邊欄 */}
+      <Sidebar
+        currentPage={currentPage}
+        onPageChange={setCurrentPage}
+        mobileOpen={mobileOpen}
+        onMobileToggle={handleMobileToggle}
+      />
+
+      {/* 主內容區 */}
+      <Box
+        component="main"
+        sx={{
+          flexGrow: 1,
+          width: { xs: '100%', md: 'calc(100% - 240px)' },
+          ml: { xs: 0, md: '240px' },
+          minHeight: '100vh',
+          display: 'flex',
+          flexDirection: 'column',
+          overflowX: 'hidden',
+        }}
+      >
+        {/* 頂部導航欄 */}
+        <AppBar
+          position="static"
+          elevation={0}
+          sx={{
+            bgcolor: 'white',
+            borderBottom: '1px solid #e5e7eb',
+            color: '#111827',
+            zIndex: 1100,
+          }}
+        >
+          <Toolbar sx={{ justifyContent: 'space-between', px: { xs: 2, md: 3 } }}>
+            <Typography variant="h6" sx={{ fontWeight: 600, color: '#111827' }}>
+              {currentPage === 'home' ? '首頁' :
+               currentPage === 'analytics' ? '統計分析' :
+               currentPage === 'budget' ? '預算管理' :
+               currentPage === 'savings' ? '儲蓄目標' : '記帳助手'}
+            </Typography>
+            
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <Button
                 variant="outlined"
                 size="small"
                 startIcon={<DownloadIcon />}
                 onClick={(e) => setExportMenuAnchor(e.currentTarget)}
+                sx={{ display: { xs: 'none', sm: 'flex' } }}
               >
                 匯出
               </Button>
@@ -71,60 +157,16 @@ export default function DashboardPage() {
                   CSV 格式
                 </MenuItem>
               </Menu>
-              <span className="hidden text-sm text-gray-600 sm:block">{session.user?.email}</span>
-              <button
-                onClick={() => signOut({ callbackUrl: '/auth/signin' })}
-                className="rounded-md px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-100"
-              >
-                登出
-              </button>
-            </div>
-          </div>
-        </div>
-      </nav>
+            </Box>
+          </Toolbar>
+        </AppBar>
 
-      {/* 主內容區 */}
-      <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-        {/* 摘要卡片 */}
-        <div className="mb-6">
-          <SummaryCard />
-        </div>
-
-        {/* 趨勢圖表 */}
-        <div className="mb-6">
-          <TrendChart />
-        </div>
-
-        {/* 預算和類別分析 */}
-        <div className="mb-6 grid gap-6 md:grid-cols-2">
-          <BudgetCard />
-          <CategoryChart />
-        </div>
-
-        {/* 儲蓄目標 */}
-        <div className="mb-6">
-          <SavingsGoalCard />
-        </div>
-
-        {/* 電子雞 */}
-        <div className="mb-6">
-          <PetDisplay />
-        </div>
-
-        {/* 交易列表和側邊欄 */}
-        <div className="grid gap-6 lg:grid-cols-3">
-          <div className="lg:col-span-2">
-            <TransactionList />
-          </div>
-          <div className="lg:col-span-1 space-y-6">
-            <LineLinkCard />
-            <div>
-              <TransactionForm />
-            </div>
-          </div>
-        </div>
-      </main>
-    </div>
+        {/* 頁面內容 */}
+        <Box sx={{ flexGrow: 1, p: { xs: 2, md: 3 }, mt: { xs: 8, md: 0 } }}>
+          {renderPageContent()}
+        </Box>
+      </Box>
+    </Box>
   );
 }
 

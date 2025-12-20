@@ -4,6 +4,7 @@ import { LLMService } from './llm.service';
 import { UserService } from './user.service';
 import { GroupExpenseService } from './groupExpense.service';
 import { PetService } from './pet.service';
+import { BudgetNotificationService } from './budgetNotification.service';
 import { createTransactionSchema } from '@/lib/schemas/transaction.schema';
 import { logger } from '@/lib/utils/logger';
 import { AppError } from '@/lib/utils/errors';
@@ -45,6 +46,7 @@ export class LineService {
   private userService: UserService;
   private groupExpenseService: GroupExpenseService;
   private petService: PetService;
+  private budgetNotificationService: BudgetNotificationService;
 
   constructor() {
     this.transactionService = new TransactionService();
@@ -52,6 +54,7 @@ export class LineService {
     this.userService = new UserService();
     this.groupExpenseService = new GroupExpenseService();
     this.petService = new PetService();
+    this.budgetNotificationService = new BudgetNotificationService();
   }
 
   private async getOrCreateUser(lineUserId: string): Promise<string> {
@@ -142,10 +145,62 @@ export class LineService {
         logger.error('Error feeding pet', error as Error);
       }
 
+      // 檢查預算（僅對支出進行檢查）
+      let budgetMessage = '';
+      if (validated.type === 'expense') {
+        try {
+          const { BudgetService } = await import('./budget.service');
+          const budgetService = new BudgetService();
+          const status = await budgetService.getBudgetStatus(unifiedUserId);
+          
+          if (status.budget.totalBudget && status.budget.totalBudget > 0) {
+            const usagePercent = (status.totalSpent / status.budget.totalBudget) * 100;
+            const remaining = status.totalRemaining || 0;
+            
+            if (usagePercent >= 100) {
+              budgetMessage = `\n\n⚠️ 預算警告：已超支 ${Math.abs(remaining).toLocaleString()} 元！`;
+            } else if (usagePercent >= 90) {
+              budgetMessage = `\n\n🔴 預算警告：使用率 ${usagePercent.toFixed(1)}%，剩餘 ${remaining.toLocaleString()} 元`;
+            } else if (usagePercent >= 80) {
+              budgetMessage = `\n\n🟡 預算提醒：使用率 ${usagePercent.toFixed(1)}%，剩餘 ${remaining.toLocaleString()} 元`;
+            }
+          }
+          
+          // 檢查類別預算
+          if (status.budget.categoryBudgets && status.budget.categoryBudgets.size > 0) {
+            const categoryBudget = status.budget.categoryBudgets.get(validated.category);
+            if (categoryBudget && categoryBudget > 0) {
+              const categorySpent = status.categorySpent.get(validated.category) || 0;
+              const categoryPercent = (categorySpent / categoryBudget) * 100;
+              
+              if (categoryPercent >= 100) {
+                budgetMessage += `\n⚠️ ${validated.category} 類別已超支！`;
+              } else if (categoryPercent >= 90) {
+                budgetMessage += `\n🔴 ${validated.category} 類別使用率 ${categoryPercent.toFixed(1)}%`;
+              }
+            }
+          }
+        } catch (error) {
+          logger.error('Error checking budget', error as Error);
+          // 預算檢查失敗不影響記帳流程
+        }
+        
+        // 觸發預算通知服務（非阻塞，使用 pushMessage）
+        Promise.resolve().then(async () => {
+          try {
+            await this.budgetNotificationService.checkAndNotifyBudget(unifiedUserId);
+          } catch (err) {
+            logger.error('Error in budget notification service', err as Error);
+          }
+        }).catch(err => {
+          logger.error('Error in budget notification promise', err as Error);
+        });
+      }
+
       const typeText = validated.type === 'income' ? '收入' : '支出';
       const response = `✅ 已記錄 ${typeText}：\n金額：${validated.amount} 元\n類別：${validated.category}${
         validated.description ? `\n說明：${validated.description}` : ''
-      }${petMessage}`;
+      }${petMessage}${budgetMessage}`;
 
       await this.replyMessage(event.replyToken, response);
       logger.info('Transaction created', { lineUserId: userId, unifiedUserId, transactionId: transaction._id });

@@ -19,36 +19,70 @@ const PetPixelArt = ({ stage, state, hunger, health, level, size = 120 }: PetPix
 
   // 眨眼動畫：每 3-5 秒眨眼一次
   useEffect(() => {
-    if (health <= 0 || stage === 'dead' || stage === 'egg') {
-      setIsBlinking(false);
-      return; // 死亡或蛋階段不眨眼
-    }
+    // 檢查是否應該眨眼（只在正常狀態下眨眼，不在特殊狀態下眨眼）
+    const canBlink = 
+      health > 0 && 
+      stage !== 'dead' && 
+      stage !== 'egg' && 
+      state !== 'eating' && 
+      state !== 'happy' && // happy 狀態也不眨眼 
+      hunger > 75 && 
+      health > 50 &&
+      (stage === 'baby' || stage === 'child' || stage === 'adult');
 
-    // 只在正常狀態時眨眼（非 eating, hungry, sick, dying）
-    if (state === 'eating' || hunger <= 75 || health <= 50) {
+    console.log('🔵 Blink check:', {
+      canBlink,
+      health,
+      stage,
+      state,
+      hunger,
+      isBlinking,
+    });
+
+    if (!canBlink) {
       setIsBlinking(false);
       return;
     }
 
+    // 定義眨眼函數（使用 useRef 來追蹤 timeout）
+    let blinkTimeoutId: NodeJS.Timeout | null = null;
+    const doBlink = () => {
+      // 清除之前的 timeout（如果存在）
+      if (blinkTimeoutId) {
+        clearTimeout(blinkTimeoutId);
+        blinkTimeoutId = null;
+      }
+      
+      console.log('🔵 BLINK! Setting isBlinking to true');
+      setIsBlinking(true);
+      
+      blinkTimeoutId = setTimeout(() => {
+        console.log('🔵 BLINK END! Setting isBlinking to false');
+        setIsBlinking(false);
+        blinkTimeoutId = null;
+      }, 250); // 眨眼持續 250ms（稍微延長以確保可見）
+    };
+
     // 設置第一次眨眼（延遲一下，避免立即眨眼）
     const initialDelay = setTimeout(() => {
-      setIsBlinking(true);
-      setTimeout(() => {
-        setIsBlinking(false);
-      }, 200); // 眨眼持續 200ms
+      console.log('🔵 First blink triggered');
+      doBlink();
     }, 2000 + Math.random() * 1000); // 2-3 秒後第一次眨眼
 
-    // 設置定期眨眼
+    // 設置定期眨眼（第一次之後）
     const blinkInterval = setInterval(() => {
-      setIsBlinking(true);
-      setTimeout(() => {
-        setIsBlinking(false);
-      }, 200); // 眨眼持續 200ms
+      console.log('🔵 Periodic blink triggered');
+      doBlink();
     }, 3000 + Math.random() * 2000); // 每 3-5 秒隨機眨眼一次
 
     return () => {
+      console.log('🔵 Cleaning up blink timers');
       clearTimeout(initialDelay);
       clearInterval(blinkInterval);
+      if (blinkTimeoutId) {
+        clearTimeout(blinkTimeoutId);
+        blinkTimeoutId = null;
+      }
     };
   }, [health, stage, state, hunger]);
 
@@ -103,19 +137,17 @@ const PetPixelArt = ({ stage, state, hunger, health, level, size = 120 }: PetPix
     ? `/pic/pet_fig/${stage}_eye.png` 
     : null;
   
-  // 調試：記錄圖片路徑（開發環境）
+  // 調試：記錄圖片路徑和眨眼狀態
   useEffect(() => {
-    if (process.env.NODE_ENV === 'development') {
-      console.log('Pet image:', {
-        baseImage: baseImagePath,
-        eyeImage: eyeImagePath,
-        stage,
-        state,
-        hunger,
-        health,
-        isBlinking,
-      });
-    }
+    console.log('🟢 Pet image state:', {
+      baseImage: baseImagePath,
+      eyeImage: eyeImagePath,
+      stage,
+      state,
+      hunger,
+      health,
+      isBlinking,
+    });
   }, [baseImagePath, eyeImagePath, stage, state, hunger, health, isBlinking]);
   
   // 根據狀態決定動畫類型
@@ -245,28 +277,41 @@ const PetPixelArt = ({ stage, state, hunger, health, level, size = 120 }: PetPix
         
         {/* 眨眼圖片（覆蓋層，始終渲染但通過 opacity 控制顯示） */}
         {eyeImagePath && (stage === 'baby' || stage === 'child' || stage === 'adult') && (
-          <Image
-            src={eyeImagePath}
-            alt={`Pet ${stage} blinking`}
-            width={size}
-            height={size}
-            style={{
-              objectFit: 'contain',
-              width: '100%',
-              height: '100%',
+          <Box
+            sx={{
               position: 'absolute',
               top: 0,
               left: 0,
+              width: '100%',
+              height: '100%',
               zIndex: 1,
               opacity: isBlinking ? 1 : 0,
-              transition: 'opacity 0.05s ease-in-out',
-              pointerEvents: 'none', // 不影響點擊事件
+              transition: isBlinking ? 'opacity 0.1s ease-in' : 'opacity 0.15s ease-out',
+              pointerEvents: 'none',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
             }}
-            unoptimized
-            onError={(e) => {
-              console.error('Failed to load pet eye image:', eyeImagePath);
-            }}
-          />
+          >
+            <Image
+              src={eyeImagePath}
+              alt={`Pet ${stage} blinking`}
+              width={size}
+              height={size}
+              style={{
+                objectFit: 'contain',
+                width: '100%',
+                height: '100%',
+              }}
+              unoptimized
+              onLoad={() => {
+                console.log('✅ Eye image loaded:', eyeImagePath, 'isBlinking:', isBlinking);
+              }}
+              onError={(e) => {
+                console.error('❌ Failed to load pet eye image:', eyeImagePath);
+              }}
+            />
+          </Box>
         )}
       </Box>
     </Box>

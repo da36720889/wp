@@ -30,7 +30,21 @@ export default function PetDisplay() {
 
   useEffect(() => {
     fetchPet();
-    // 只在需要時手動刷新，不再自動輪詢（避免閃爍）
+    
+    // 監聽自定義事件，當記帳完成時刷新寵物狀態
+    const handleTransactionCreated = () => {
+      console.log('📝 Transaction created, refreshing pet...');
+      // 延遲一下，確保後端已經更新了 pet 狀態
+      setTimeout(() => {
+        fetchPet();
+      }, 500);
+    };
+    
+    window.addEventListener('transactionCreated', handleTransactionCreated);
+    
+    return () => {
+      window.removeEventListener('transactionCreated', handleTransactionCreated);
+    };
   }, []);
 
   const fetchPet = async () => {

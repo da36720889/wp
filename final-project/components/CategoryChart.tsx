@@ -20,6 +20,21 @@ export default function CategoryChart() {
 
   useEffect(() => {
     fetchCategoryStats();
+    
+    // 監聽自定義事件，當記帳完成時刷新圖表
+    const handleTransactionCreated = () => {
+      console.log('📊 Transaction created, refreshing category chart...');
+      // 延遲一下，確保後端已經更新了數據
+      setTimeout(() => {
+        fetchCategoryStats();
+      }, 500);
+    };
+    
+    window.addEventListener('transactionCreated', handleTransactionCreated);
+    
+    return () => {
+      window.removeEventListener('transactionCreated', handleTransactionCreated);
+    };
   }, [period]);
 
   const fetchCategoryStats = async () => {
@@ -107,16 +122,39 @@ export default function CategoryChart() {
                     cx="50%"
                     cy="50%"
                     labelLine={false}
-                    label={({ name, percent }) => `${name} ${percent ? (percent * 100).toFixed(0) : 0}%`}
+                    label={({ name, percent }) => {
+                      // 只顯示比例大於 5% 的標籤，避免文字重疊
+                      if (percent && percent > 0.05) {
+                        return `${name} ${(percent * 100).toFixed(0)}%`;
+                      }
+                      return '';
+                    }}
                     outerRadius={80}
                     fill="#8884d8"
                     dataKey="value"
+                    legendType="circle"
                   >
                     {pieData.map((_, index) => (
                       <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                     ))}
                   </Pie>
-                  <Tooltip formatter={(value: number | undefined) => value ? formatCurrency(value) : ''} />
+                  <Tooltip 
+                    formatter={(value: number | undefined) => value ? formatCurrency(value) : ''}
+                    contentStyle={{ backgroundColor: 'rgba(255, 255, 255, 0.95)', border: '1px solid #ccc', borderRadius: '4px' }}
+                  />
+                  <Legend 
+                    verticalAlign="bottom" 
+                    height={36}
+                    formatter={(value, entry: any) => {
+                      const data = pieData.find(d => d.name === value);
+                      if (data) {
+                        const total = pieData.reduce((sum, d) => sum + d.value, 0);
+                        const percent = (data.value / total * 100).toFixed(1);
+                        return `${value} (${percent}%)`;
+                      }
+                      return value;
+                    }}
+                  />
                 </PieChart>
               </ResponsiveContainer>
             )}
