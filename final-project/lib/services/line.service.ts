@@ -5,11 +5,13 @@ import { UserService } from './user.service';
 import { GroupExpenseService } from './groupExpense.service';
 import { PetService } from './pet.service';
 import { BudgetNotificationService } from './budgetNotification.service';
+import { BudgetService } from './budget.service';
 import { createTransactionSchema } from '@/lib/schemas/transaction.schema';
 import { logger } from '@/lib/utils/logger';
 import { AppError } from '@/lib/utils/errors';
 import connectDB from '@/lib/db/mongodb';
 import { IParticipant } from '@/lib/models/GroupExpense';
+import { ITransaction } from '@/lib/models/Transaction';
 
 function getLineConfig() {
   const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN;
@@ -47,6 +49,7 @@ export class LineService {
   private groupExpenseService: GroupExpenseService;
   private petService: PetService;
   private budgetNotificationService: BudgetNotificationService;
+  private budgetService: BudgetService;
 
   constructor() {
     this.transactionService = new TransactionService();
@@ -55,6 +58,7 @@ export class LineService {
     this.groupExpenseService = new GroupExpenseService();
     this.petService = new PetService();
     this.budgetNotificationService = new BudgetNotificationService();
+    this.budgetService = new BudgetService();
   }
 
   private async getOrCreateUser(lineUserId: string): Promise<string> {
@@ -112,6 +116,46 @@ export class LineService {
         return;
       }
 
+      // 檢查是否為預算設定訊息（優先於記帳訊息處理）
+      const unifiedUserId = await this.getOrCreateUser(userId);
+      const budgetMatch = this.parseBudgetMessage(message);
+      if (budgetMatch) {
+        const currentMonth = this.getCurrentMonth();
+        logger.info('Setting budget', {
+          userId: unifiedUserId,
+          currentMonth,
+          daily: budgetMatch.daily,
+          weekly: budgetMatch.weekly,
+          monthly: budgetMatch.monthly,
+          message: message,
+        });
+        const updatedBudget = await this.budgetService.updateBudget(unifiedUserId, currentMonth, {
+          dailyBudget: budgetMatch.daily,
+          weeklyBudget: budgetMatch.weekly,
+          monthlyBudget: budgetMatch.monthly,
+        });
+        
+        // 重新載入以確認保存成功
+        const Budget = (await import('@/lib/models/Budget')).default;
+        const savedBudget = await Budget.findById(updatedBudget._id);
+        
+        logger.info('Budget updated successfully', {
+          userId: unifiedUserId,
+          budgetId: updatedBudget._id?.toString(),
+          dailyBudget: savedBudget?.dailyBudget,
+          weeklyBudget: savedBudget?.weeklyBudget,
+          monthlyBudget: savedBudget?.monthlyBudget,
+          savedDailyBudget: savedBudget?.dailyBudget,
+          savedWeeklyBudget: savedBudget?.weeklyBudget,
+          savedMonthlyBudget: savedBudget?.monthlyBudget,
+        });
+        await this.replyMessageWithQuickReply(
+          event.replyToken,
+          `✅ 預算設定成功！\n\n單日預算：${budgetMatch.daily.toLocaleString()} 元\n單週預算：${budgetMatch.weekly.toLocaleString()} 元\n單月預算：${budgetMatch.monthly.toLocaleString()} 元`
+        );
+        return;
+      }
+
       // 使用 LLM 解析記帳訊息
       const parsed = await this.llmService.parseTransactionMessage(message);
       if (!parsed) {
@@ -122,70 +166,31 @@ export class LineService {
         return;
       }
 
-      // 獲取或創建用戶（統一用戶 ID）
-      const unifiedUserId = await this.getOrCreateUser(userId);
-
       // 驗證並創建交易記錄
       const validated = createTransactionSchema.parse(parsed);
       const transaction = await this.transactionService.createTransaction(unifiedUserId, validated);
+      
+      logger.info('Transaction created', {
+        userId: unifiedUserId,
+        transactionId: transaction._id,
+        amount: transaction.amount,
+        type: transaction.type,
+        date: transaction.date,
+      });
 
-      // 餵食電子雞
-      let petMessage = '';
-      try {
-        const pet = await this.petService.feedPet(unifiedUserId, validated.amount);
-        const petEmoji = pet.state === 'eating' ? '🍽️' : pet.state === 'happy' ? '😊' : '🐣';
-        petMessage = `\n\n${petEmoji} ${pet.name} 吃飽了！${pet.state === 'eating' ? '正在享用美食中...' : ''}`;
-        
-        // 檢查進化（根據階段變化判斷）
-        const currentPet = await this.petService.getOrCreatePet(unifiedUserId);
-        if (currentPet.stage !== pet.stage && currentPet.stage !== 'sick' && currentPet.stage !== 'dying' && currentPet.stage !== 'dead') {
-          petMessage += '\n✨ 恭喜！你的電子雞進化了！';
-        }
-      } catch (error) {
-        logger.error('Error feeding pet', error as Error);
-      }
-
-      // 檢查預算（僅對支出進行檢查）
-      let budgetMessage = '';
-      if (validated.type === 'expense') {
+      // 餵食電子雞（背景執行，不顯示訊息）
+      Promise.resolve().then(async () => {
         try {
-          const { BudgetService } = await import('./budget.service');
-          const budgetService = new BudgetService();
-          const status = await budgetService.getBudgetStatus(unifiedUserId);
-          
-          if (status.budget.totalBudget && status.budget.totalBudget > 0) {
-            const usagePercent = (status.totalSpent / status.budget.totalBudget) * 100;
-            const remaining = status.totalRemaining || 0;
-            
-            if (usagePercent >= 100) {
-              budgetMessage = `\n\n⚠️ 預算警告：已超支 ${Math.abs(remaining).toLocaleString()} 元！`;
-            } else if (usagePercent >= 90) {
-              budgetMessage = `\n\n🔴 預算警告：使用率 ${usagePercent.toFixed(1)}%，剩餘 ${remaining.toLocaleString()} 元`;
-            } else if (usagePercent >= 80) {
-              budgetMessage = `\n\n🟡 預算提醒：使用率 ${usagePercent.toFixed(1)}%，剩餘 ${remaining.toLocaleString()} 元`;
-            }
-          }
-          
-          // 檢查類別預算
-          if (status.budget.categoryBudgets && status.budget.categoryBudgets.size > 0) {
-            const categoryBudget = status.budget.categoryBudgets.get(validated.category);
-            if (categoryBudget && categoryBudget > 0) {
-              const categorySpent = status.categorySpent.get(validated.category) || 0;
-              const categoryPercent = (categorySpent / categoryBudget) * 100;
-              
-              if (categoryPercent >= 100) {
-                budgetMessage += `\n⚠️ ${validated.category} 類別已超支！`;
-              } else if (categoryPercent >= 90) {
-                budgetMessage += `\n🔴 ${validated.category} 類別使用率 ${categoryPercent.toFixed(1)}%`;
-              }
-            }
-          }
+          await this.petService.feedPet(unifiedUserId, validated.amount);
         } catch (error) {
-          logger.error('Error checking budget', error as Error);
-          // 預算檢查失敗不影響記帳流程
+          logger.error('Error feeding pet', error as Error);
         }
-        
-        // 觸發預算通知服務（非阻塞，使用 pushMessage）
+      }).catch(err => {
+        logger.error('Error in pet feeding promise', err as Error);
+      });
+
+      // 檢查預算（背景執行，不顯示訊息，僅觸發通知服務）
+      if (validated.type === 'expense') {
         Promise.resolve().then(async () => {
           try {
             await this.budgetNotificationService.checkAndNotifyBudget(unifiedUserId);
@@ -197,20 +202,78 @@ export class LineService {
         });
       }
 
-      const typeText = validated.type === 'income' ? '收入' : '支出';
-      const response = `✅ 已記錄 ${typeText}：\n金額：${validated.amount} 元\n類別：${validated.category}${
-        validated.description ? `\n說明：${validated.description}` : ''
-      }${petMessage}${budgetMessage}`;
+      // 構建回覆訊息（交易成功 + 預算警告，同一次 reply）
+      const periodLabels = {
+        daily: '單日',
+        weekly: '單週',
+        monthly: '單月',
+      };
+      
+      let replyMessage = `✅ 已記錄：${validated.category} NT$${validated.amount.toLocaleString()}`;
+      
+      if (validated.type === 'expense') {
+        try {
+          // 等待一小段時間確保交易已完全保存到資料庫
+          await new Promise(resolve => setTimeout(resolve, 100));
+          
+          const budgetExceeded = await this.budgetService.checkBudgetExceeded(unifiedUserId);
+          logger.info('Budget check result', { 
+            userId: unifiedUserId, 
+            exceeded: budgetExceeded,
+            transactionAmount: validated.amount 
+          });
+          
+          if (budgetExceeded) {
+            const { period, limit, current } = budgetExceeded;
+            const periodLabel = periodLabels[period] || period;
+            // 在同一訊息中換行顯示警告
+            replyMessage += `\n\n⚠️ 已超過${periodLabel}預算！目前 ${current.toLocaleString()} / ${limit.toLocaleString()}`;
+            logger.info('Budget exceeded warning added', {
+              userId: unifiedUserId,
+              period,
+              current,
+              limit,
+            });
+          } else {
+            logger.info('No budget exceeded', { userId: unifiedUserId });
+          }
+        } catch (err) {
+          logger.error('Error checking budget exceeded', err as Error, { 
+            userId: unifiedUserId,
+            errorMessage: err instanceof Error ? err.message : String(err)
+          });
+        }
+      }
 
-      await this.replyMessage(event.replyToken, response);
+      // 發送成功訊息（帶 quick reply 按鈕）
+      await this.replyMessageWithQuickReply(event.replyToken, replyMessage);
+
       logger.info('Transaction created', { lineUserId: userId, unifiedUserId, transactionId: transaction._id });
     } catch (error) {
       logger.error('Error handling LINE message', error as Error, { userId, message });
       
-      if (error instanceof AppError) {
-        await this.replyMessage(event.replyToken, `❌ 錯誤：${error.message}`);
-      } else {
-        await this.replyMessage(event.replyToken, '❌ 處理您的訊息時發生錯誤，請稍後再試。');
+      // 错误处理：如果 replyToken 可能已使用，使用 pushMessage 发送错误
+      const client = getLineClient();
+      const errorMessage = error instanceof AppError 
+        ? `❌ 錯誤：${error.message}`
+        : '❌ 處理您的訊息時發生錯誤，請稍後再試。';
+      
+      // 尝试使用 pushMessage（因为 replyToken 可能已使用）
+      try {
+        await client.pushMessage(userId, {
+          type: 'text',
+          text: errorMessage,
+        });
+      } catch (pushError) {
+        logger.error('Error sending error message via pushMessage', pushError as Error);
+        // 如果 pushMessage 也失败，尝试使用 replyMessage（可能 replyToken 还未使用）
+        if (event.replyToken) {
+          try {
+            await this.replyMessage(event.replyToken, errorMessage);
+          } catch (replyError) {
+            logger.error('Error sending error message via replyMessage', replyError as Error);
+          }
+        }
       }
     }
   }
@@ -691,5 +754,353 @@ export class LineService {
       throw error;
     }
   }
+
+  /**
+   * 取得 Quick Reply 設定（本週支出 / 本月支出 / 最近記錄 / 設定預算）
+   */
+  private getQuickReplyConfig() {
+    return {
+      items: [
+        {
+          type: 'action',
+          action: {
+            type: 'postback',
+            label: '本周支出',
+            data: 'expense_summary:week',
+          },
+        },
+        {
+          type: 'action',
+          action: {
+            type: 'postback',
+            label: '本月支出',
+            data: 'expense_summary:month',
+          },
+        },
+        {
+          type: 'action',
+          action: {
+            type: 'postback',
+            label: '最近記錄',
+            data: 'recent_records',
+          },
+        },
+        {
+          type: 'action',
+          action: {
+            type: 'postback',
+            label: '設定預算',
+            data: 'set_budget',
+          },
+        },
+      ],
+    } as const;
+  }
+
+  /**
+   * 發送帶 Quick Reply 按鈕的訊息（僅文字）
+   */
+  private async replyMessageWithQuickReply(replyToken: string, text: string): Promise<void> {
+    try {
+      const client = getLineClient();
+      logger.info('Sending LINE reply with quick reply', { replyToken, textLength: text.length });
+      const quickReplyConfig = this.getQuickReplyConfig();
+      await client.replyMessage(replyToken, {
+        type: 'text',
+        text,
+        quickReply: {
+          items: quickReplyConfig.items.map(item => ({ ...item })),
+        },
+      });
+      logger.info('LINE reply with quick reply sent successfully', { replyToken });
+    } catch (error) {
+      logger.error('Error replying LINE message with quick reply', error as Error, { 
+        replyToken,
+        errorMessage: error instanceof Error ? error.message : String(error),
+        errorStack: error instanceof Error ? error.stack : undefined
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * 處理 postback 事件
+   */
+  async handlePostback(event: WebhookEvent): Promise<void> {
+    if (event.type !== 'postback') {
+      return;
+    }
+
+    const userId = event.source.userId;
+    if (!userId) {
+      logger.warn('Received postback without userId');
+      return;
+    }
+
+    const replyToken = event.replyToken;
+    if (!replyToken) {
+      logger.error('Missing replyToken in postback event');
+      return;
+    }
+
+    const data = event.postback.data;
+    logger.info('Processing postback', { userId, data });
+
+    try {
+      const unifiedUserId = await this.getOrCreateUser(userId);
+
+      // 解析 postback data
+      if (data && data.startsWith('expense_summary:')) {
+        const parts = data.split(':');
+        const period = parts[1]; // 'week', 'month', 'last_week', 'last_month'
+        
+        if (!period) {
+          logger.warn('Invalid postback period', { data, period });
+          await this.replyMessage(replyToken, '❌ 無效的請求參數');
+          return;
+        }
+        
+        let startDate: Date;
+        let endDate: Date;
+        let periodLabel: string;
+        
+        const now = new Date();
+        
+        if (period === 'week') {
+          // 查詢本週支出
+          const weekStart = new Date(now);
+          const dayOfWeek = weekStart.getDay();
+          const diff = dayOfWeek === 0 ? -6 : 1 - dayOfWeek; // 調整到週一
+          weekStart.setDate(weekStart.getDate() + diff);
+          weekStart.setHours(0, 0, 0, 0);
+          startDate = weekStart;
+          endDate = now;
+          periodLabel = '本週';
+        } else if (period === 'last_week') {
+          // 查詢上週支出
+          const lastWeekEnd = new Date(now);
+          const dayOfWeek = lastWeekEnd.getDay();
+          const diff = dayOfWeek === 0 ? -6 : 1 - dayOfWeek; // 調整到本週一
+          lastWeekEnd.setDate(lastWeekEnd.getDate() + diff - 1); // 上週日
+          lastWeekEnd.setHours(23, 59, 59, 999);
+          
+          const lastWeekStart = new Date(lastWeekEnd);
+          lastWeekStart.setDate(lastWeekStart.getDate() - 6); // 上週一
+          lastWeekStart.setHours(0, 0, 0, 0);
+          startDate = lastWeekStart;
+          endDate = lastWeekEnd;
+          periodLabel = '上週';
+        } else if (period === 'month') {
+          // 查詢本月支出
+          const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+          monthStart.setHours(0, 0, 0, 0);
+          startDate = monthStart;
+          endDate = now;
+          periodLabel = '本月';
+        } else if (period === 'last_month') {
+          // 查詢上月支出
+          const lastMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0); // 上月最後一天
+          lastMonthEnd.setHours(23, 59, 59, 999);
+          
+          const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1); // 上月第一天
+          lastMonthStart.setHours(0, 0, 0, 0);
+          startDate = lastMonthStart;
+          endDate = lastMonthEnd;
+          periodLabel = '上月';
+        } else {
+          logger.warn('Invalid postback period', { data, period });
+          await this.replyMessage(replyToken, '❌ 無效的請求參數');
+          return;
+        }
+        
+        // 查詢該時間範圍內的所有交易記錄
+        const result = await this.transactionService.getTransactions({
+          userId: unifiedUserId,
+          startDate,
+          endDate,
+          limit: 1000, // 設定較大的 limit 以確保取得所有記錄
+          offset: 0,
+        });
+        
+        // 按日期分組計算每天的收入和支出
+        const dailyData = new Map<string, { income: number; expense: number }>();
+        
+        result.transactions.forEach((transaction) => {
+          const dateKey = new Date(transaction.date).toLocaleDateString('zh-TW', {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+          });
+          
+          if (!dailyData.has(dateKey)) {
+            dailyData.set(dateKey, { income: 0, expense: 0 });
+          }
+          
+          const dayData = dailyData.get(dateKey)!;
+          if (transaction.type === 'income') {
+            dayData.income += transaction.amount;
+          } else {
+            dayData.expense += transaction.amount;
+          }
+        });
+        
+        // 生成日期列表（從開始日期到結束日期）
+        const dateList: string[] = [];
+        const currentDate = new Date(startDate);
+        const endDateForLoop = new Date(endDate);
+        
+        while (currentDate <= endDateForLoop) {
+          const dateKey = currentDate.toLocaleDateString('zh-TW', {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+          });
+          dateList.push(dateKey);
+          currentDate.setDate(currentDate.getDate() + 1);
+        }
+        
+        // 構建回覆訊息
+        let response = `📊 ${periodLabel}每日明細：\n\n`;
+        
+        // 計算總計
+        let totalIncome = 0;
+        let totalExpense = 0;
+        
+        if (dateList.length === 0 || dailyData.size === 0) {
+          response += '尚無記錄';
+        } else {
+          // 只顯示有記錄的日期
+          dateList.forEach((dateKey) => {
+            const dayData = dailyData.get(dateKey);
+            if (!dayData) {
+              return; // 跳過沒有記錄的日期
+            }
+            
+            const income = Number(dayData.income) || 0;
+            const expense = Number(dayData.expense) || 0;
+            
+            // 如果收入和支出都是0，跳過
+            if (income === 0 && expense === 0) {
+              return;
+            }
+            
+            // 累加總計
+            totalIncome += income;
+            totalExpense += expense;
+            
+            // 顯示日期和明細（無icon，無餘額）
+            response += `${dateKey}\n`;
+            if (income > 0) {
+              response += `  收入：${income.toLocaleString()} 元\n`;
+            }
+            if (expense > 0) {
+              response += `  支出：${expense.toLocaleString()} 元\n`;
+            }
+          });
+          
+          // 計算總餘額
+          const totalBalance = totalIncome - totalExpense;
+          
+          // 顯示總計（有icon，有餘額）
+          response += `━━━━━━━━━━━━━━\n`;
+          response += `總計：\n`;
+          response += `💰 總收入：${totalIncome.toLocaleString()} 元\n`;
+          response += `💸 總支出：${totalExpense.toLocaleString()} 元\n`;
+          response += `📊 總餘額：${totalBalance.toLocaleString()} 元`;
+        }
+        
+        // 使用帶 quick reply 的回覆，讓按鈕持續顯示
+        await this.replyMessageWithQuickReply(replyToken, response);
+      } else if (data === 'recent_records') {
+        // 查詢最近十筆記錄
+        const result = await this.transactionService.getTransactions({
+          userId: unifiedUserId,
+          limit: 10,
+          offset: 0,
+        });
+
+        if (result.transactions.length === 0) {
+          await this.replyMessageWithQuickReply(replyToken, '📝 目前沒有任何記帳記錄。');
+          return;
+        }
+
+        let response = `📝 最近 ${result.transactions.length} 筆記錄：\n\n`;
+
+        // 按時間順序顯示，格式：類別 | 支出(收入) | 金額 | 時間
+        result.transactions.forEach((t, index) => {
+          const typeText = t.type === 'income' ? '收入' : '支出';
+          const date = new Date(t.date).toLocaleDateString('zh-TW');
+          
+          response += `${index + 1}. ${t.category} | ${typeText} | ${t.amount.toLocaleString()}元 | ${date}\n`;
+        });
+
+        await this.replyMessageWithQuickReply(replyToken, response);
+      } else if (data === 'set_budget') {
+        // 設定預算
+        const template = `請按照以下格式輸入您的預算：\n\n單日預算：1000\n單週預算：5000\n單月預算：20000\n\n請複製貼上並修改金額：`;
+        await this.replyMessageWithQuickReply(replyToken, template);
+      } else {
+        // 未知的 postback data 格式
+        logger.warn('Unknown postback data format', { data });
+        await this.replyMessage(replyToken, '❌ 無法識別的請求');
+      }
+    } catch (error) {
+      logger.error('Error handling postback', error as Error, { userId, data });
+      await this.replyMessage(replyToken, '❌ 處理請求時發生錯誤，請稍後再試。');
+    }
+  }
+
+  /**
+   * 解析預算設定訊息
+   * 格式：單日預算：1000\n單週預算：5000\n單月預算：20000
+   * 也支持：單日預算：1000 單週預算：5000 單月預算：20000（同一行）
+   */
+  private parseBudgetMessage(message: string): { daily: number; weekly: number; monthly: number } | null {
+    try {
+      logger.info('Parsing budget message', { message, messageLength: message.length });
+      
+      // 匹配格式：單日預算：數字（支持中文冒號和英文冒號）
+      const dailyMatch = message.match(/單日預算[：:]\s*(\d+)/);
+      const weeklyMatch = message.match(/單週預算[：:]\s*(\d+)/);
+      const monthlyMatch = message.match(/單月預算[：:]\s*(\d+)/);
+
+      logger.info('Budget message regex matches', {
+        dailyMatch: dailyMatch ? dailyMatch[1] : null,
+        weeklyMatch: weeklyMatch ? weeklyMatch[1] : null,
+        monthlyMatch: monthlyMatch ? monthlyMatch[1] : null,
+      });
+
+      if (!dailyMatch || !weeklyMatch || !monthlyMatch) {
+        logger.info('Budget message format not matched', { message });
+        return null;
+      }
+
+      const daily = parseInt(dailyMatch[1], 10);
+      const weekly = parseInt(weeklyMatch[1], 10);
+      const monthly = parseInt(monthlyMatch[1], 10);
+
+      if (isNaN(daily) || isNaN(weekly) || isNaN(monthly) || daily < 0 || weekly < 0 || monthly < 0) {
+        logger.warn('Invalid budget values', { daily, weekly, monthly });
+        return null;
+      }
+
+      logger.info('Budget message parsed successfully', { daily, weekly, monthly });
+      return { daily, weekly, monthly };
+    } catch (error) {
+      logger.error('Error parsing budget message', error as Error, { message });
+      return null;
+    }
+  }
+
+  /**
+   * 獲取當前月份（YYYY-MM 格式）
+   */
+  private getCurrentMonth(): string {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    return `${year}-${month}`;
+  }
+
 }
 

@@ -59,6 +59,8 @@ export async function POST(request: NextRequest) {
 
         if (event.type === 'message' && event.message.type === 'text') {
           await lineService.handleMessage(event);
+        } else if (event.type === 'postback') {
+          await lineService.handlePostback(event);
         } else {
           logger.info('Skipping event', { type: event.type });
         }
