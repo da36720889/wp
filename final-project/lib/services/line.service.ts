@@ -1,4 +1,4 @@
-import { Client, middleware, MiddlewareConfig, WebhookEvent } from '@line/bot-sdk';
+import { Client, middleware, MiddlewareConfig, WebhookEvent, FlexBubble, FlexComponent } from '@line/bot-sdk';
 import { TransactionService } from './transaction.service';
 import { LLMService } from './llm.service';
 import { UserService } from './user.service';
@@ -10,6 +10,7 @@ import { logger } from '@/lib/utils/logger';
 import { AppError } from '@/lib/utils/errors';
 import connectDB from '@/lib/db/mongodb';
 import { IParticipant } from '@/lib/models/GroupExpense';
+import { ITransaction } from '@/lib/models/Transaction';
 
 function getLineConfig() {
   const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN;
@@ -197,20 +198,78 @@ export class LineService {
         });
       }
 
-      const typeText = validated.type === 'income' ? '收入' : '支出';
-      const response = `✅ 已記錄 ${typeText}：\n金額：${validated.amount} 元\n類別：${validated.category}${
-        validated.description ? `\n說明：${validated.description}` : ''
-      }${petMessage}${budgetMessage}`;
+      // 查詢最近三筆記錄（用於 Flex Message）
+      const recentRecords = await this.transactionService.getTransactions({
+        userId: unifiedUserId,
+        limit: 3,
+        offset: 0,
+      });
 
-      await this.replyMessage(event.replyToken, response);
+      // 構建並發送 Flex Message
+      const flexBubble = this.buildRecordSuccessBubble(recentRecords.transactions);
+      let altText = `✅ 已成功記錄${validated.type === 'income' ? '收入' : '支出'}：${validated.amount} 元 - ${validated.category}`;
+      // LINE altText 限制 400 字符
+      if (altText.length > 400) {
+        altText = altText.substring(0, 397) + '...';
+      }
+      
+      // 标记 replyToken 是否已使用
+      let replyTokenUsed = false;
+      try {
+        await this.replyFlexMessage(event.replyToken, altText, flexBubble);
+        replyTokenUsed = true;
+      } catch (flexError) {
+        logger.error('Error sending Flex Message', flexError as Error);
+        // Flex Message 发送失败，使用普通文本回复
+        try {
+          await this.replyMessage(event.replyToken, `✅ 已記錄 ${validated.type === 'income' ? '收入' : '支出'}：${validated.amount} 元`);
+          replyTokenUsed = true;
+        } catch (replyError) {
+          logger.error('Error sending fallback text message', replyError as Error);
+        }
+      }
+
+      // 如果有寵物訊息或預算訊息，額外發送文字訊息
+      if (petMessage || budgetMessage) {
+        const additionalMessage = `${petMessage}${budgetMessage}`;
+        // 使用 pushMessage 發送額外訊息（因為 replyToken 只能使用一次）
+        try {
+          const client = getLineClient();
+          await client.pushMessage(userId, {
+            type: 'text',
+            text: additionalMessage,
+          });
+        } catch (error) {
+          logger.error('Error sending additional message', error as Error);
+        }
+      }
+
       logger.info('Transaction created', { lineUserId: userId, unifiedUserId, transactionId: transaction._id });
     } catch (error) {
       logger.error('Error handling LINE message', error as Error, { userId, message });
       
-      if (error instanceof AppError) {
-        await this.replyMessage(event.replyToken, `❌ 錯誤：${error.message}`);
-      } else {
-        await this.replyMessage(event.replyToken, '❌ 處理您的訊息時發生錯誤，請稍後再試。');
+      // 错误处理：如果 replyToken 可能已使用，使用 pushMessage 发送错误
+      const client = getLineClient();
+      const errorMessage = error instanceof AppError 
+        ? `❌ 錯誤：${error.message}`
+        : '❌ 處理您的訊息時發生錯誤，請稍後再試。';
+      
+      // 尝试使用 pushMessage（因为 replyToken 可能已使用）
+      try {
+        await client.pushMessage(userId, {
+          type: 'text',
+          text: errorMessage,
+        });
+      } catch (pushError) {
+        logger.error('Error sending error message via pushMessage', pushError as Error);
+        // 如果 pushMessage 也失败，尝试使用 replyMessage（可能 replyToken 还未使用）
+        if (event.replyToken) {
+          try {
+            await this.replyMessage(event.replyToken, errorMessage);
+          } catch (replyError) {
+            logger.error('Error sending error message via replyMessage', replyError as Error);
+          }
+        }
       }
     }
   }
@@ -689,6 +748,246 @@ export class LineService {
       });
       // 重新拋出錯誤以便上層處理
       throw error;
+    }
+  }
+
+  private async replyFlexMessage(replyToken: string, altText: string, contents: FlexBubble): Promise<void> {
+    try {
+      const client = getLineClient();
+      logger.info('Sending LINE Flex Message', { replyToken, altText });
+      await client.replyMessage(replyToken, {
+        type: 'flex',
+        altText,
+        contents,
+      });
+      logger.info('LINE Flex Message sent successfully', { replyToken });
+    } catch (error) {
+      logger.error('Error replying LINE Flex Message', error as Error, { 
+        replyToken,
+        errorMessage: error instanceof Error ? error.message : String(error),
+        errorStack: error instanceof Error ? error.stack : undefined
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * 構建記帳成功後的 Flex Message Bubble
+   * @param records 最近三筆記帳記錄（按 createdAt DESC 排序）
+   */
+  private buildRecordSuccessBubble(records: ITransaction[]): FlexBubble {
+    // 格式化日期時間（支持 Date 对象和字符串）
+    const formatDateTime = (date: Date | string): string => {
+      const d = date instanceof Date ? date : new Date(date);
+      // 检查是否为有效日期
+      if (isNaN(d.getTime())) {
+        return '日期無效';
+      }
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      const hours = String(d.getHours()).padStart(2, '0');
+      const minutes = String(d.getMinutes()).padStart(2, '0');
+      return `${month}/${day} ${hours}:${minutes}`;
+    };
+
+    // 構建最近三筆記錄的文字內容
+    const recordTexts: FlexComponent[] = [];
+    
+    // 第一筆（最近一筆）
+    if (records.length > 0) {
+      const t = records[0];
+      const typeEmoji = t.type === 'income' ? '💰' : '💸';
+      const recordText = `${typeEmoji} ${t.amount} 元 | ${t.category} | ${formatDateTime(t.createdAt)}`;
+      recordTexts.push({
+        type: 'text',
+        text: recordText.length > 120 ? recordText.substring(0, 117) + '...' : recordText,
+        wrap: true,
+        size: 'sm',
+        color: '#666666',
+      });
+    }
+
+    // 第二筆
+    if (records.length > 1) {
+      const t = records[1];
+      const typeEmoji = t.type === 'income' ? '💰' : '💸';
+      const recordText = `${typeEmoji} ${t.amount} 元 | ${t.category} | ${formatDateTime(t.createdAt)}`;
+      recordTexts.push({
+        type: 'text',
+        text: recordText.length > 120 ? recordText.substring(0, 117) + '...' : recordText,
+        wrap: true,
+        size: 'sm',
+        color: '#666666',
+      });
+    }
+
+    // 第三筆
+    if (records.length > 2) {
+      const t = records[2];
+      const typeEmoji = t.type === 'income' ? '💰' : '💸';
+      const recordText = `${typeEmoji} ${t.amount} 元 | ${t.category} | ${formatDateTime(t.createdAt)}`;
+      recordTexts.push({
+        type: 'text',
+        text: recordText.length > 120 ? recordText.substring(0, 117) + '...' : recordText,
+        wrap: true,
+        size: 'sm',
+        color: '#666666',
+      });
+    }
+
+    // 如果沒有記錄，顯示提示
+    if (recordTexts.length === 0) {
+      recordTexts.push({
+        type: 'text',
+        text: '尚無其他記錄',
+        size: 'sm',
+        color: '#999999',
+      });
+    }
+
+    return {
+      type: 'bubble',
+      size: 'mega',
+      direction: 'ltr',
+      hero: {
+        type: 'image',
+        url: 'https://png.pngtree.com/png-clipart/20230802/original/pngtree-the-rich-man-cartoon-bank-person-vector-picture-image_9328574.png',
+        size: 'full',
+        aspectRatio: '20:13',
+        aspectMode: 'fit',
+        offsetTop: 'none',
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          {
+            type: 'text',
+            weight: 'bold',
+            size: 'xl',
+            text: '已成功紀錄!',
+          },
+          {
+            type: 'text',
+            text: '最近三筆紀錄',
+            size: 'sm',
+            color: '#999999',
+            margin: 'md',
+          },
+          ...recordTexts,
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'button',
+            style: 'link',
+            height: 'sm',
+            action: {
+              type: 'postback',
+              label: '本周支出',
+              data: 'expense_summary:week',
+            },
+          },
+          {
+            type: 'button',
+            style: 'link',
+            height: 'sm',
+            action: {
+              type: 'postback',
+              label: '本月支出',
+              data: 'expense_summary:month',
+            },
+          },
+        ],
+        flex: 0,
+      },
+      styles: {
+        header: {
+          separator: false,
+        },
+      },
+    };
+  }
+
+  /**
+   * 處理 postback 事件
+   */
+  async handlePostback(event: WebhookEvent): Promise<void> {
+    if (event.type !== 'postback') {
+      return;
+    }
+
+    const userId = event.source.userId;
+    if (!userId) {
+      logger.warn('Received postback without userId');
+      return;
+    }
+
+    const replyToken = event.replyToken;
+    if (!replyToken) {
+      logger.error('Missing replyToken in postback event');
+      return;
+    }
+
+    const data = event.postback.data;
+    logger.info('Processing postback', { userId, data });
+
+    try {
+      const unifiedUserId = await this.getOrCreateUser(userId);
+
+      // 解析 postback data
+      if (data && data.startsWith('expense_summary:')) {
+        const parts = data.split(':');
+        const period = parts[1]; // 'week' 或 'month'
+        
+        if (!period || (period !== 'week' && period !== 'month')) {
+          logger.warn('Invalid postback period', { data, period });
+          await this.replyMessage(replyToken, '❌ 無效的請求參數');
+          return;
+        }
+        
+        if (period === 'week') {
+          // 查詢本週支出
+          const now = new Date();
+          const weekStart = new Date(now);
+          const dayOfWeek = weekStart.getDay();
+          const diff = dayOfWeek === 0 ? -6 : 1 - dayOfWeek; // 調整到週一
+          weekStart.setDate(weekStart.getDate() + diff);
+          weekStart.setHours(0, 0, 0, 0);
+          
+          const summary = await this.transactionService.getSummary(unifiedUserId, weekStart, now);
+          // 確保數值類型安全
+          const totalExpense = Number(summary.totalExpense) || 0;
+          const totalIncome = Number(summary.totalIncome) || 0;
+          const balance = Number(summary.balance) || 0;
+          const response = `📊 本週支出摘要：\n\n總支出：${totalExpense.toLocaleString()} 元\n總收入：${totalIncome.toLocaleString()} 元\n餘額：${balance.toLocaleString()} 元`;
+          await this.replyMessage(replyToken, response);
+        } else if (period === 'month') {
+          // 查詢本月支出
+          const now = new Date();
+          const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+          monthStart.setHours(0, 0, 0, 0);
+          
+          const summary = await this.transactionService.getSummary(unifiedUserId, monthStart, now);
+          // 確保數值類型安全
+          const totalExpense = Number(summary.totalExpense) || 0;
+          const totalIncome = Number(summary.totalIncome) || 0;
+          const balance = Number(summary.balance) || 0;
+          const response = `📊 本月支出摘要：\n\n總支出：${totalExpense.toLocaleString()} 元\n總收入：${totalIncome.toLocaleString()} 元\n餘額：${balance.toLocaleString()} 元`;
+          await this.replyMessage(replyToken, response);
+        }
+      } else {
+        // 未知的 postback data 格式
+        logger.warn('Unknown postback data format', { data });
+        await this.replyMessage(replyToken, '❌ 無法識別的請求');
+      }
+    } catch (error) {
+      logger.error('Error handling postback', error as Error, { userId, data });
+      await this.replyMessage(replyToken, '❌ 處理請求時發生錯誤，請稍後再試。');
     }
   }
 }
