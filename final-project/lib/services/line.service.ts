@@ -6,6 +6,8 @@ import { GroupExpenseService } from './groupExpense.service';
 import { PetService } from './pet.service';
 import { BudgetNotificationService } from './budgetNotification.service';
 import { BudgetService } from './budget.service';
+import { SavingsGoalService } from './savingsGoal.service';
+import { SavingsGoalNotificationService } from './savingsGoalNotification.service';
 import { createTransactionSchema } from '@/lib/schemas/transaction.schema';
 import { logger } from '@/lib/utils/logger';
 import { AppError } from '@/lib/utils/errors';
@@ -50,6 +52,8 @@ export class LineService {
   private petService: PetService;
   private budgetNotificationService: BudgetNotificationService;
   private budgetService: BudgetService;
+  private savingsGoalService: SavingsGoalService;
+  private savingsGoalNotificationService: SavingsGoalNotificationService;
 
   constructor() {
     this.transactionService = new TransactionService();
@@ -59,6 +63,8 @@ export class LineService {
     this.petService = new PetService();
     this.budgetNotificationService = new BudgetNotificationService();
     this.budgetService = new BudgetService();
+    this.savingsGoalService = new SavingsGoalService();
+    this.savingsGoalNotificationService = new SavingsGoalNotificationService();
   }
 
   private async getOrCreateUser(lineUserId: string): Promise<string> {
@@ -109,15 +115,48 @@ export class LineService {
     }
 
     try {
-      // 處理特殊指令
-      if (message.startsWith('/')) {
+      // 檢查是否為自然語言指令並轉換
+      const normalizedMessage = this.normalizeNaturalLanguageCommand(message);
+      
+      // 處理特殊指令（包括轉換後的自然語言指令）
+      if (normalizedMessage.startsWith('/')) {
         const groupId = event.source.type === 'group' ? (event.source as { groupId?: string }).groupId : undefined;
-        await this.handleCommand(userId, message, event.replyToken, groupId);
+        await this.handleCommand(userId, normalizedMessage, event.replyToken, groupId);
         return;
       }
 
       // 檢查是否為預算設定訊息（優先於記帳訊息處理）
       const unifiedUserId = await this.getOrCreateUser(userId);
+      
+      // 檢查是否為儲蓄目標設定訊息
+      const savingsGoalMatch = this.parseSavingsGoalMessage(message);
+      if (savingsGoalMatch) {
+        logger.info('Setting savings goal', {
+          userId: unifiedUserId,
+          title: savingsGoalMatch.title,
+          targetAmount: savingsGoalMatch.targetAmount,
+          deadline: savingsGoalMatch.deadline,
+        });
+        const goal = await this.savingsGoalService.createGoal(unifiedUserId, {
+          title: savingsGoalMatch.title,
+          targetAmount: savingsGoalMatch.targetAmount,
+          deadline: savingsGoalMatch.deadline,
+        });
+        await this.savingsGoalService.updateGoalProgress(unifiedUserId, goal._id.toString());
+        const updatedGoal = await this.savingsGoalService.getGoal(goal._id.toString(), unifiedUserId);
+        if (updatedGoal) {
+          const progress = this.savingsGoalService.calculateProgress(updatedGoal);
+          const deadlineText = updatedGoal.deadline 
+            ? `\n期限：${new Date(updatedGoal.deadline).toLocaleDateString('zh-TW')}（剩餘 ${progress.daysRemaining} 天）`
+            : '';
+          await this.replyMessageWithQuickReply(
+            event.replyToken,
+            `✅ 儲蓄目標設定成功！\n\n目標名稱：${updatedGoal.title}\n目標金額：${updatedGoal.targetAmount.toLocaleString()} 元\n當前進度：${updatedGoal.currentAmount.toLocaleString()} 元（${progress.percentage.toFixed(1)}%）\n還需：${progress.remaining.toLocaleString()} 元${deadlineText}`
+          );
+        }
+        return;
+      }
+      
       const budgetMatch = this.parseBudgetMessage(message);
       if (budgetMatch) {
         const currentMonth = this.getCurrentMonth();
@@ -159,10 +198,14 @@ export class LineService {
       // 使用 LLM 解析記帳訊息
       const parsed = await this.llmService.parseTransactionMessage(message);
       if (!parsed) {
-        await this.replyMessage(
-          event.replyToken,
-          '抱歉，我無法理解您的記帳訊息。請使用格式：金額 類別 描述（例如：午餐 150 元）'
-        );
+        const helpMessage = `🤔 我無法理解您的訊息呢！\n\n` +
+          `💡 記帳很簡單，直接告訴我：\n` +
+          `• 「午餐 150 元」\n` +
+          `• 「交通 50」\n` +
+          `• 「收入 5000」\n\n` +
+          `📋 或輸入 /help 查看完整指令說明\n\n` +
+          `💬 只要包含「金額」和「項目名稱」就可以了！`;
+        await this.replyMessage(event.replyToken, helpMessage);
         return;
       }
 
@@ -202,6 +245,17 @@ export class LineService {
         });
       }
 
+      // 檢查儲蓄目標達成（背景執行，不顯示訊息，僅觸發通知服務）
+      Promise.resolve().then(async () => {
+        try {
+          await this.savingsGoalNotificationService.checkAndNotifyGoalCompletion(unifiedUserId);
+        } catch (err) {
+          logger.error('Error in savings goal notification service', err as Error);
+        }
+      }).catch(err => {
+        logger.error('Error in savings goal notification promise', err as Error);
+      });
+
       // 構建回覆訊息（交易成功 + 預算警告，同一次 reply）
       const periodLabels = {
         daily: '單日',
@@ -216,6 +270,7 @@ export class LineService {
           // 等待一小段時間確保交易已完全保存到資料庫
           await new Promise(resolve => setTimeout(resolve, 100));
           
+          // 檢查總預算（日/週/月）
           const budgetExceeded = await this.budgetService.checkBudgetExceeded(unifiedUserId);
           logger.info('Budget check result', { 
             userId: unifiedUserId, 
@@ -223,10 +278,19 @@ export class LineService {
             transactionAmount: validated.amount 
           });
           
+          // 檢查類別預算
+          const categoryBudgetExceeded = await this.budgetService.checkCategoryBudgetExceeded(unifiedUserId, validated.category);
+          logger.info('Category budget check result', { 
+            userId: unifiedUserId, 
+            category: validated.category,
+            exceeded: categoryBudgetExceeded,
+            transactionAmount: validated.amount 
+          });
+          
+          // 顯示總預算警告
           if (budgetExceeded) {
             const { period, limit, current } = budgetExceeded;
             const periodLabel = periodLabels[period] || period;
-            // 在同一訊息中換行顯示警告
             replyMessage += `\n\n⚠️ 已超過${periodLabel}預算！目前 ${current.toLocaleString()} / ${limit.toLocaleString()}`;
             logger.info('Budget exceeded warning added', {
               userId: unifiedUserId,
@@ -234,7 +298,21 @@ export class LineService {
               current,
               limit,
             });
-          } else {
+          }
+          
+          // 顯示類別預算警告
+          if (categoryBudgetExceeded) {
+            const { category, limit, current } = categoryBudgetExceeded;
+            replyMessage += `\n\n⚠️ 「${category}」類別已超支！目前 ${current.toLocaleString()} / ${limit.toLocaleString()}`;
+            logger.info('Category budget exceeded warning added', {
+              userId: unifiedUserId,
+              category,
+              current,
+              limit,
+            });
+          }
+          
+          if (!budgetExceeded && !categoryBudgetExceeded) {
             logger.info('No budget exceeded', { userId: unifiedUserId });
           }
         } catch (err) {
@@ -278,6 +356,103 @@ export class LineService {
     }
   }
 
+  /**
+   * 將自然語言轉換為對應的指令
+   */
+  private normalizeNaturalLanguageCommand(message: string): string {
+    const trimmed = message.trim().toLowerCase();
+    
+    // 指令映射表：自然語言關鍵字 -> 指令
+    const commandMap: Record<string, string> = {
+      // list 相關
+      '最近紀錄': '/list',
+      '最近記錄': '/list',
+      '最近記帳': '/list',
+      '查詢記錄': '/list',
+      '查詢紀錄': '/list',
+      '查看記錄': '/list',
+      '查看紀錄': '/list',
+      '記錄列表': '/list',
+      '紀錄列表': '/list',
+      'recent': '/list',
+      'records': '/list',
+      'list': '/list',
+      'history': '/list',
+      '查詢': '/list',
+      '列表': '/list',
+      
+      // summary 相關
+      '摘要': '/summary',
+      '總結': '/summary',
+      '總覽': '/summary',
+      '統計': '/summary',
+      'summary': '/summary',
+      'overview': '/summary',
+      'statistics': '/summary',
+      'stats': '/summary',
+      '總計': '/summary',
+      
+      // delete 相關（需要額外參數，這裡只做初步識別）
+      '刪除': '/delete',
+      '刪掉': '/delete',
+      '移除': '/delete',
+      'delete': '/delete',
+      'remove': '/delete',
+      'del': '/delete',
+      
+      // pet 相關
+      '電子雞': '/pet',
+      '寵物': '/pet',
+      '我的寵物': '/pet',
+      '寵物狀態': '/pet',
+      'pet': '/pet',
+      'tamagotchi': '/pet',
+      '我的雞': '/pet',
+      '小雞': '/pet',
+      
+      // myid 相關
+      '我的id': '/myid',
+      '用戶id': '/myid',
+      'line id': '/myid',
+      'id': '/myid',
+      'myid': '/myid',
+      'userid': '/myid',
+      '我的用戶id': '/myid',
+      
+      // help 相關
+      '幫助': '/help',
+      '說明': '/help',
+      '使用說明': '/help',
+      '如何使用': '/help',
+      '功能': '/help',
+      'help': '/help',
+      '說明書': '/help',
+      '教學': '/help',
+    };
+    
+    // 檢查完全匹配
+    if (commandMap[trimmed]) {
+      return commandMap[trimmed];
+    }
+    
+    // 檢查部分匹配（處理帶參數的情況，如 "刪除 i1"）
+    for (const [keyword, command] of Object.entries(commandMap)) {
+      if (trimmed.startsWith(keyword + ' ') || trimmed === keyword) {
+        // 如果有後續參數，保留它們
+        const rest = message.slice(keyword.length).trim();
+        return rest ? `${command} ${rest}` : command;
+      }
+    }
+    
+    // 如果已經是以 / 開頭的指令，直接返回
+    if (message.startsWith('/')) {
+      return message;
+    }
+    
+    // 不匹配，返回原訊息
+    return message;
+  }
+
   private async handleCommand(
     lineUserId: string,
     command: string,
@@ -293,7 +468,11 @@ export class LineService {
       switch (cmd.toLowerCase()) {
         case 'list':
         case '查詢':
-        case 'ls': {
+        case 'ls':
+        case 'recent':
+        case 'records':
+        case 'history':
+        case '列表': {
           const limit = args[0] ? parseInt(args[0], 10) : 10;
           const result = await this.transactionService.getTransactions({
             userId: unifiedUserId,
@@ -342,7 +521,14 @@ export class LineService {
 
         case 'summary':
         case '摘要':
-        case 'sum': {
+        case 'sum':
+        case 'overview':
+        case 'statistics':
+        case 'stats':
+        case '總結':
+        case '總覽':
+        case '統計':
+        case '總計': {
           const summary = await this.transactionService.getSummary(unifiedUserId);
           const response = `📊 記帳摘要：\n\n總收入：${summary.totalIncome} 元\n總支出：${summary.totalExpense} 元\n餘額：${summary.balance} 元`;
           await this.replyMessage(replyToken, response);
@@ -351,7 +537,10 @@ export class LineService {
 
         case 'delete':
         case '刪除':
-        case 'del': {
+        case 'del':
+        case 'remove':
+        case '刪掉':
+        case '移除': {
           if (!args[0]) {
             await this.replyMessage(replyToken, '❌ 請提供要刪除的記錄編號或 ID。\n使用 /list 查看記錄。');
             return;
@@ -439,7 +628,12 @@ export class LineService {
 
         case 'pet':
         case '寵物':
-        case '電子雞': {
+        case '電子雞':
+        case 'tamagotchi':
+        case '我的寵物':
+        case '寵物狀態':
+        case '我的雞':
+        case '小雞': {
           const unifiedUserId = await this.getOrCreateUser(lineUserId);
           try {
             const pet = await this.petService.getOrCreatePet(unifiedUserId);
@@ -463,11 +657,62 @@ export class LineService {
         }
 
         case 'myid':
-        case 'id': {
+        case 'id':
+        case 'userid':
+        case '我的id':
+        case '用戶id':
+        case '我的用戶id': {
           await this.replyMessage(
             replyToken,
             `🆔 您的 LINE 用戶 ID：\n\`${lineUserId}\`\n\n💡 在 Web 界面中輸入此 ID 以連結您的 Google 帳號`
           );
+          break;
+        }
+
+        case 'savings':
+        case 'goal':
+        case '儲蓄':
+        case '儲蓄目標':
+        case '目標':
+        case '我的目標':
+        case '查看目標':
+        case '查看儲蓄': {
+          const unifiedUserId = await this.getOrCreateUser(lineUserId);
+          try {
+            const goals = await this.savingsGoalService.getGoals(unifiedUserId, true);
+            
+            if (goals.length === 0) {
+              await this.replyMessage(
+                replyToken,
+                `💰 目前沒有設定儲蓄目標\n\n💡 設定方式：\n「儲蓄目標 [名稱] [金額]」\n例如：儲蓄目標 旅遊 50000\n\n或使用：\n「設定儲蓄目標 [名稱] [金額]」`
+              );
+              break;
+            }
+
+            let message = `💰 儲蓄目標總覽：\n\n`;
+            
+            for (const goal of goals) {
+              await this.savingsGoalService.updateGoalProgress(unifiedUserId, goal._id.toString());
+              const updatedGoal = await this.savingsGoalService.getGoal(goal._id.toString(), unifiedUserId);
+              if (!updatedGoal) continue;
+              
+              const progress = this.savingsGoalService.calculateProgress(updatedGoal);
+              const statusIcon = updatedGoal.completed ? '✅' : '🎯';
+              const deadlineText = updatedGoal.deadline 
+                ? `\n期限：${new Date(updatedGoal.deadline).toLocaleDateString('zh-TW')}（剩餘 ${progress.daysRemaining} 天）`
+                : '';
+              
+              message += `${statusIcon} ${updatedGoal.title}\n`;
+              message += `目標：${updatedGoal.targetAmount.toLocaleString()} 元\n`;
+              message += `目前：${updatedGoal.currentAmount.toLocaleString()} 元（${progress.percentage.toFixed(1)}%）\n`;
+              message += `還需：${progress.remaining.toLocaleString()} 元${deadlineText}\n\n`;
+            }
+            
+            await this.replyMessage(replyToken, message.trim());
+          } catch (error) {
+            logger.error('Error fetching savings goals', error as Error);
+            await this.replyMessage(replyToken, '❌ 查詢儲蓄目標時發生錯誤。');
+          }
           break;
         }
 
@@ -708,7 +953,13 @@ export class LineService {
 
         case 'help':
         case '幫助':
-        case 'h': {
+        case 'h':
+        case '說明':
+        case '使用說明':
+        case '如何使用':
+        case '功能':
+        case '說明書':
+        case '教學': {
           const helpText = `📖 使用說明：\n\n` +
             `💬 直接輸入記帳訊息（例如：午餐 150 元）\n\n` +
             `📋 指令：\n` +
@@ -716,9 +967,13 @@ export class LineService {
             `/summary - 查看記帳摘要\n` +
             `/delete [編號] - 刪除指定記錄（例如：/delete i1 或 /delete o1）\n` +
             `/pet - 查看電子雞狀態\n` +
+            `/savings 或 /goal - 查看儲蓄目標進度\n` +
             `/myid - 獲取您的 LINE 用戶 ID（用於連結 Google 帳號）\n` +
             `/group - 群組分帳功能（僅在群組中使用）\n` +
             `/help - 顯示此說明\n\n` +
+            `💰 設定儲蓄目標：\n` +
+            `「儲蓄目標 [名稱] [金額]」\n` +
+            `例如：儲蓄目標 旅遊 50000\n\n` +
             `🌐 網頁連結：\n` +
             `https://final-lac-alpha.vercel.app\n` +
             `可用 Google 信箱登入，與 LINE Bot 記帳記錄同步`;
@@ -1088,6 +1343,58 @@ export class LineService {
       return { daily, weekly, monthly };
     } catch (error) {
       logger.error('Error parsing budget message', error as Error, { message });
+      return null;
+    }
+  }
+
+  /**
+   * 解析儲蓄目標設定訊息
+   * 支援格式：
+   * - "儲蓄目標 旅遊 50000"
+   * - "設定儲蓄目標 買車 300000"
+   * - "儲蓄目標 買房 5000000 2025-12-31"
+   */
+  private parseSavingsGoalMessage(message: string): { title: string; targetAmount: number; deadline?: Date } | null {
+    try {
+      logger.info('Parsing savings goal message', { message, messageLength: message.length });
+      
+      // 匹配格式：儲蓄目標 [名稱] [金額] [期限（可選）]
+      // 或：設定儲蓄目標 [名稱] [金額] [期限（可選）]
+      const match = message.match(/(?:儲蓄目標|設定儲蓄目標)[：:\s]+([^\d]+?)\s+(\d+)(?:\s+(.+))?/);
+      
+      if (!match) {
+        logger.info('Savings goal message format not matched', { message });
+        return null;
+      }
+
+      const title = match[1].trim();
+      const targetAmount = parseInt(match[2], 10);
+      const deadlineStr = match[3]?.trim();
+
+      if (!title || isNaN(targetAmount) || targetAmount <= 0) {
+        logger.warn('Invalid savings goal values', { title, targetAmount });
+        return null;
+      }
+
+      let deadline: Date | undefined;
+      if (deadlineStr) {
+        // 嘗試解析日期格式：YYYY-MM-DD 或 YYYY/MM/DD
+        const dateMatch = deadlineStr.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+        if (dateMatch) {
+          const year = parseInt(dateMatch[1], 10);
+          const month = parseInt(dateMatch[2], 10) - 1;
+          const day = parseInt(dateMatch[3], 10);
+          deadline = new Date(year, month, day);
+          if (isNaN(deadline.getTime())) {
+            deadline = undefined;
+          }
+        }
+      }
+
+      logger.info('Savings goal message parsed successfully', { title, targetAmount, deadline });
+      return { title, targetAmount, deadline };
+    } catch (error) {
+      logger.error('Error parsing savings goal message', error as Error);
       return null;
     }
   }

@@ -139,7 +139,7 @@ export class BudgetService {
 
     // 如果重新查詢後字段仍然不存在，記錄警告
     if (!verifiedBudget.dailyBudget && !verifiedBudget.weeklyBudget && !verifiedBudget.monthlyBudget) {
-      logger.error('Budget fields not saved to DB!', {
+      logger.error('Budget fields not saved to DB!', undefined, {
         userId,
         month,
         updateData,
@@ -395,6 +395,77 @@ export class BudgetService {
     }
 
     logger.info('No budget exceeded', { userId });
+    return null;
+  }
+
+  /**
+   * 檢查特定類別的預算是否超過
+   * 返回超過的預算信息和詳細信息，如果沒有超過則返回 null
+   */
+  async checkCategoryBudgetExceeded(userId: string, category: string): Promise<{
+    category: string;
+    limit: number;
+    current: number;
+  } | null> {
+    await connectDB();
+
+    const currentMonth = this.getCurrentMonth();
+    
+    // 直接查詢預算
+    const budgetDoc = await Budget.findOne({ userId, month: currentMonth });
+    
+    if (!budgetDoc || !budgetDoc.categoryBudgets) {
+      return null;
+    }
+
+    // 檢查該類別是否有設定預算
+    const categoryBudget = budgetDoc.categoryBudgets.get(category);
+    if (!categoryBudget || categoryBudget <= 0) {
+      return null;
+    }
+
+    // 計算當月該類別的支出
+    const [year, monthNum] = currentMonth.split('-').map(Number);
+    const monthStart = new Date(year, monthNum - 1, 1);
+    monthStart.setHours(0, 0, 0, 0);
+    const monthEnd = new Date(year, monthNum, 0, 23, 59, 59, 999);
+
+    const { transactions: monthTransactions } = await this.transactionRepository.findByUserId({
+      userId,
+      startDate: monthStart,
+      endDate: monthEnd,
+      type: 'expense',
+      limit: 10000,
+      offset: 0,
+    });
+
+    // 計算該類別的總支出
+    const categorySpent = monthTransactions
+      .filter(t => t.category === category)
+      .reduce((sum, t) => sum + t.amount, 0);
+
+    logger.info('Category budget check', {
+      userId,
+      category,
+      categorySpent,
+      categoryLimit: categoryBudget,
+      transactionCount: monthTransactions.filter(t => t.category === category).length,
+    });
+
+    if (categorySpent > categoryBudget) {
+      logger.info('Category budget exceeded', {
+        userId,
+        category,
+        current: categorySpent,
+        limit: categoryBudget,
+      });
+      return {
+        category,
+        limit: categoryBudget,
+        current: categorySpent,
+      };
+    }
+
     return null;
   }
 

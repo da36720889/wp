@@ -152,24 +152,8 @@ export default function Sidebar({ currentPage, onPageChange, mobileOpen, onMobil
     <Box sx={{ width: drawerWidth, height: '100%', bgcolor: '#1f2937', display: 'flex', flexDirection: 'column' }}>
       {/* Logo/Title */}
       <Box sx={{ p: 2, borderBottom: '1px solid #374151' }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Box
-              sx={{
-                width: 32,
-                height: 32,
-                borderRadius: '8px',
-                bgcolor: '#3b82f6',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: 'white',
-                fontSize: '18px',
-                fontWeight: 'bold',
-              }}
-            >
-              記
-            </Box>
             <Box sx={{ color: 'white', fontSize: '16px', fontWeight: 600 }}>記帳助手</Box>
           </Box>
           <IconButton
