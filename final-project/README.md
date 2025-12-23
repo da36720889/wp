@@ -1,6 +1,6 @@
 # [114-1] Web Programming Final
 
-## (Group xx) LINE 記帳機器人
+## (Group 59) LINE 記帳機器人
 
 > **注意：請將 Group xx 替換為您的組別編號**
 
@@ -9,7 +9,7 @@
 ## 📹 Demo 影片連結
 
 <!-- TODO: 請在此填入您的 Demo 影片連結 -->
-[Demo 影片連結](請填入您的影片連結)
+[[Demo 影片連結](請填入您的影片連結)](https://drive.google.com/file/d/136xLr8zlhSKE6idA1UEtD914SDXjoDhM/view?usp=sharing)
 
 ---
 
