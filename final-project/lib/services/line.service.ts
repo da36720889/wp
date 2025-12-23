@@ -428,6 +428,17 @@ export class LineService {
       'help': '/help',
       '說明書': '/help',
       '教學': '/help',
+
+      // savings/goal 相關
+      '儲蓄': '/savings',
+      '儲蓄目標': '/savings',
+      '目標': '/savings',
+      '我的目標': '/savings',
+      '查看目標': '/savings',
+      '查看儲蓄': '/savings',
+      'savings': '/savings',
+      'goal': '/savings',
+      'goals': '/savings',
     };
     
     // 檢查完全匹配
@@ -472,6 +483,16 @@ export class LineService {
         case 'recent':
         case 'records':
         case 'history':
+        case '最近紀錄':
+        case '最近記錄':
+        case '最近記帳':
+        case '查詢記錄':
+        case '查詢紀錄':
+        case '查看記錄':
+        case '查看紀錄':
+        case '記錄列表':
+        case '紀錄列表':
+        case '列表':
         case '列表': {
           const limit = args[0] ? parseInt(args[0], 10) : 10;
           const result = await this.transactionService.getTransactions({
@@ -671,6 +692,7 @@ export class LineService {
 
         case 'savings':
         case 'goal':
+        case 'goals':
         case '儲蓄':
         case '儲蓄目標':
         case '目標':
